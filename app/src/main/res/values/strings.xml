@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Arcaea 谱面导入</string>
+    
+    <!-- UI Labels -->
+    <string name="select_directory">选择 songlist 目录</string>
+    <string name="import_chart">导入谱面包</string>
+    <string name="no_directory_selected">未选择目录</string>
+    <string name="directory_selected">已选择目录</string>
+    <string name="operation_log">操作日志</string>
+    
+    <!-- Status Messages -->
+    <string name="status_idle">就绪</string>
+    <string name="status_selecting_directory">正在选择目录…</string>
+    <string name="status_parsing_zip">正在解析压缩包…</string>
+    <string name="status_extracting">正在解压文件…</string>
+    <string name="status_updating_songlist">正在更新 songlist…</string>
+    <string name="status_success">导入成功！</string>
+    
+    <!-- Error Messages -->
+    <string name="error_invalid_zip">无效的谱面包：未找到有效的 songlist 文件或 id 字段</string>
+    <string name="error_permission_denied">权限不足，请重新选择目录</string>
+    <string name="error_json_parse">JSON 解析错误</string>
+    <string name="error_file_not_found">文件不存在</string>
+    <string name="error_io">文件操作失败</string>
+    <string name="error_unknown">未知错误</string>
+    
+    <!-- Actions -->
+    <string name="action_retry">重试</string>
+    <string name="action_select_again">重新选择</string>
+    <string name="action_ok">确定</string>
+</resources>
