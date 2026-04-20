@@ -9,4 +9,4 @@ aff 自制谱面导入工具，支持 SAF 存储访问框架导入 ZIP 格式的
 - Material You 动态主题
 
 ## 许可证
-GPL 3.0 - 详见
+GPL 3.0 - 详见LICENSE
