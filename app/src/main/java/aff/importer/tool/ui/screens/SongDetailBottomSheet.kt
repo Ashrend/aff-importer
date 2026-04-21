@@ -130,6 +130,15 @@ private fun SongDetailContent(
     
     var worldUnlock by remember { mutableStateOf(song.worldUnlock) }
     var remoteDl by remember { mutableStateOf(song.remoteDl) }
+    var bydLocalUnlock by remember { mutableStateOf(song.bydLocalUnlock) }
+    
+    // 来源信息 (source_localized)
+    var sourceEn by remember { mutableStateOf(song.sourceLocalized.en) }
+    var sourceJa by remember { mutableStateOf(song.sourceLocalized.ja) }
+    var sourceKo by remember { mutableStateOf(song.sourceLocalized.ko) }
+    var sourceZhHans by remember { mutableStateOf(song.sourceLocalized.zhHans) }
+    var sourceZhHant by remember { mutableStateOf(song.sourceLocalized.zhHant) }
+    var sourceCopyright by remember { mutableStateOf(song.sourceCopyright) }
     
     // 难度编辑状态
     var difficulties by remember { mutableStateOf(song.difficulties) }
@@ -381,7 +390,77 @@ private fun SongDetailContent(
                 )
                 Text("远程下载")
             }
+            
+            // byd_local_unlock
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier.clickable { bydLocalUnlock = !bydLocalUnlock }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = bydLocalUnlock,
+                    onCheckedChange = { bydLocalUnlock = it }
+                )
+                Text("BYD本地解锁")
+            }
         }
+        
+        // 来源信息 (source_localized)
+        SectionTitle("来源信息 (source_localized)")
+        OutlinedTextField(
+            value = sourceEn,
+            onValueChange = { sourceEn = it },
+            label = { Text("来源默认（英文）") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = sourceJa,
+                onValueChange = { sourceJa = it },
+                label = { Text("来源日文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = sourceKo,
+                onValueChange = { sourceKo = it },
+                label = { Text("来源韩文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = sourceZhHans,
+                onValueChange = { sourceZhHans = it },
+                label = { Text("来源简体中文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = sourceZhHant,
+                onValueChange = { sourceZhHant = it },
+                label = { Text("来源繁体中文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
+        
+        OutlinedTextField(
+            value = sourceCopyright,
+            onValueChange = { sourceCopyright = it },
+            label = { Text("版权信息 (source_copyright)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
 
         // 难度信息编辑
         SectionTitle("难度信息")
@@ -491,6 +570,15 @@ private fun SongDetailContent(
                         audioPreviewEnd = audioPreviewEnd.toIntOrNull() ?: song.audioPreviewEnd,
                         worldUnlock = worldUnlock,
                         remoteDl = remoteDl,
+                        bydLocalUnlock = bydLocalUnlock,
+                        sourceLocalized = Song.LocalizedText(
+                            en = sourceEn,
+                            ja = sourceJa,
+                            ko = sourceKo,
+                            zhHans = sourceZhHans,
+                            zhHant = sourceZhHant
+                        ),
+                        sourceCopyright = sourceCopyright,
                         difficulties = difficulties
                     )
                     onSave(updatedSong)
@@ -616,6 +704,22 @@ private fun DifficultyEditor(
                     onCheckedChange = { onUpdate(difficulty.copy(ratingPlus = it)) }
                 )
                 Text("有+号")
+            }
+        }
+        
+        // 隐藏选项（PST/PRS/FTR 也支持 hidden_until_unlocked）
+        if (difficulty.ratingClass <= 2) {
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onUpdate(difficulty.copy(hiddenUntilUnlocked = !difficulty.hiddenUntilUnlocked)) }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = difficulty.hiddenUntilUnlocked,
+                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntilUnlocked = it)) }
+                )
+                Text("解锁前隐藏 (hidden_until_unlocked)")
             }
         }
         
