@@ -119,11 +119,12 @@ class SonglistRepository(private val context: Context) {
     /**
      * 获取歌曲曲绘的 URI
      * 优先查找 base.jpg，如果不存在则查找 1080_base.jpg
+     * @param folderId 实际的文件夹ID（已经处理过 remote_dl 的情况）
      */
-    suspend fun getSongJacketUri(directoryUri: Uri, songId: String): Uri? = withContext(Dispatchers.IO) {
+    suspend fun getSongJacketUri(directoryUri: Uri, folderId: String): Uri? = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
-            val songFolder = directory.findFile(songId) ?: return@withContext null
+            val songFolder = directory.findFile(folderId) ?: return@withContext null
             
             // 优先查找 base.jpg
             songFolder.findFile("base.jpg")?.let { return@withContext it.uri }
@@ -141,7 +142,7 @@ class SonglistRepository(private val context: Context) {
             
             null
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to get jacket for $songId", e)
+            Log.e(TAG, "Failed to get jacket for $folderId", e)
             null
         }
     }
@@ -220,13 +221,16 @@ class SonglistRepository(private val context: Context) {
 
     /**
      * 删除指定歌曲（从 songlist 移除并删除文件夹）
+     * @param directoryUri 目录 URI
+     * @param songId songlist 中的歌曲 ID（原始 id，不含 dl_ 前缀）
+     * @param folderId 实际的文件夹名称（可能包含 dl_ 前缀）
      */
-    suspend fun deleteSong(directoryUri: Uri, songId: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun deleteSong(directoryUri: Uri, songId: String, folderId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri)
                 ?: throw IllegalStateException("无法访问目录")
 
-            // 1. 从 songlist 中移除
+            // 1. 从 songlist 中移除（使用原始 songId）
             val songlistFile = directory.findFile(SONGLIST_FILENAME)
                 ?: throw IllegalStateException("找不到 songlist 文件")
 
@@ -290,17 +294,47 @@ class SonglistRepository(private val context: Context) {
 
             writeFileContent(songlistFile.uri, resultContent)
 
-            // 2. 删除歌曲文件夹
-            val songFolder = directory.findFile(songId)
+            // 2. 删除歌曲文件夹（使用实际文件夹名 folderId）
+            val songFolder = directory.findFile(folderId)
             if (songFolder != null) {
-                val deleted = songFolder.delete()
-                Log.d(TAG, "Deleted folder $songId: $deleted")
+                // 递归删除文件夹中的所有内容
+                val deleted = deleteFolderRecursively(songFolder)
+                Log.d(TAG, "Deleted folder $folderId: $deleted")
+            } else {
+                Log.w(TAG, "Song folder not found: $folderId")
             }
 
-            Log.d(TAG, "Successfully deleted song: $songId")
+            Log.d(TAG, "Successfully deleted song: $songId (folder: $folderId)")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to delete song", e)
+            false
+        }
+    }
+    
+    /**
+     * 递归删除文件夹及其所有内容
+     * 处理包含子文件夹和特殊文件（如 preview.ogg）的情况
+     */
+    private fun deleteFolderRecursively(folder: DocumentFile): Boolean {
+        return try {
+            // 先删除文件夹中的所有内容
+            folder.listFiles().forEach { file ->
+                if (file.isDirectory) {
+                    // 递归删除子文件夹
+                    deleteFolderRecursively(file)
+                } else {
+                    // 删除文件（包括 base.jpg、1080_base.jpg、preview.ogg 等）
+                    val deleted = file.delete()
+                    Log.d(TAG, "Deleted file ${file.name}: $deleted")
+                }
+            }
+            // 最后删除空文件夹
+            val result = folder.delete()
+            Log.d(TAG, "Deleted folder ${folder.name}: $result")
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete folder ${folder.name}", e)
             false
         }
     }
