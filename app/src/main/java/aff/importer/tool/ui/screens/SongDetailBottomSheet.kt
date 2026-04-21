@@ -707,19 +707,19 @@ private fun DifficultyEditor(
             }
         }
         
-        // 隐藏选项（PST/PRS/FTR 也支持 hidden_until_unlocked）
+        // 隐藏选项（PST/PRS/FTR 也支持 hidden_until）
         if (difficulty.ratingClass <= 2) {
             Row(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onUpdate(difficulty.copy(hiddenUntilUnlocked = !difficulty.hiddenUntilUnlocked)) }
+                    .clickable { onUpdate(difficulty.copy(hiddenUntil = !difficulty.hiddenUntil)) }
             ) {
                 androidx.compose.material3.Checkbox(
-                    checked = difficulty.hiddenUntilUnlocked,
-                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntilUnlocked = it)) }
+                    checked = difficulty.hiddenUntil,
+                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntil = it)) }
                 )
-                Text("解锁前隐藏 (hidden_until_unlocked)")
+                Text("解锁前隐藏 (hidden_until)")
             }
         }
         
@@ -901,18 +901,18 @@ private fun AdvancedDifficultyOptions(
                 Text("audioOverride (难度特定音频)")
             }
             
-            // hidden_until_unlocked
+            // hidden_until
             Row(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onUpdate(difficulty.copy(hiddenUntilUnlocked = !difficulty.hiddenUntilUnlocked)) }
+                    .clickable { onUpdate(difficulty.copy(hiddenUntil = !difficulty.hiddenUntil)) }
             ) {
                 androidx.compose.material3.Checkbox(
-                    checked = difficulty.hiddenUntilUnlocked,
-                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntilUnlocked = it)) }
+                    checked = difficulty.hiddenUntil,
+                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntil = it)) }
                 )
-                Text("hidden_until_unlocked (解锁前隐藏)")
+                Text("hidden_until (解锁前隐藏)")
             }
             
             // world_unlock
