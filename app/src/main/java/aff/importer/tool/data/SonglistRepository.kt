@@ -220,6 +220,73 @@ class SonglistRepository(private val context: Context) {
     }
 
     /**
+     * 重命名歌曲文件夹（用于 remote_dl 字段切换）
+     * @param directoryUri 目录 URI
+     * @param oldFolderId 旧文件夹名称
+     * @param newFolderId 新文件夹名称
+     * @return 是否成功
+     */
+    suspend fun renameSongFolder(directoryUri: Uri, oldFolderId: String, newFolderId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+            
+            // 检查旧文件夹是否存在
+            val oldFolder = directory.findFile(oldFolderId)
+                ?: throw IllegalStateException("找不到旧文件夹: $oldFolderId")
+            
+            // 检查新文件夹是否已存在（避免覆盖）
+            if (directory.findFile(newFolderId) != null) {
+                throw IllegalStateException("目标文件夹已存在: $newFolderId")
+            }
+            
+            // 创建新文件夹
+            val newFolder = directory.createDirectory(newFolderId)
+                ?: throw IllegalStateException("无法创建新文件夹: $newFolderId")
+            
+            // 递归复制所有内容
+            copyFolderContents(oldFolder, newFolder)
+            
+            // 删除旧文件夹
+            val deleted = deleteFolderRecursively(oldFolder)
+            if (!deleted) {
+                Log.w(TAG, "Failed to delete old folder: $oldFolderId")
+            }
+            
+            Log.d(TAG, "Renamed folder from $oldFolderId to $newFolderId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to rename folder from $oldFolderId to $newFolderId", e)
+            false
+        }
+    }
+    
+    /**
+     * 递归复制文件夹内容
+     */
+    private fun copyFolderContents(source: DocumentFile, destination: DocumentFile) {
+        source.listFiles().forEach { file ->
+            if (file.isDirectory) {
+                // 创建子文件夹并递归复制
+                val newSubFolder = destination.createDirectory(file.name ?: "unnamed")
+                    ?: throw IllegalStateException("无法创建子文件夹: ${file.name}")
+                copyFolderContents(file, newSubFolder)
+            } else {
+                // 复制文件
+                val mimeType = getMimeType(file.name ?: "")
+                val newFile = destination.createFile(mimeType, file.name ?: "unnamed")
+                    ?: throw IllegalStateException("无法创建文件: ${file.name}")
+                
+                context.contentResolver.openInputStream(file.uri)?.use { input ->
+                    context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
      * 删除指定歌曲（从 songlist 移除并删除文件夹）
      * @param directoryUri 目录 URI
      * @param songId songlist 中的歌曲 ID（原始 id，不含 dl_ 前缀）
