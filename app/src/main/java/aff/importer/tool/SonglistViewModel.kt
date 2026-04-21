@@ -177,6 +177,33 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(isSaving = true) }
         
         viewModelScope.launch {
+            // 检查 remote_dl 是否发生变化
+            val originalSong = _uiState.value.allSongs.find { it.id == updatedSong.id }
+            val remoteDlChanged = originalSong != null && originalSong.remoteDl != updatedSong.remoteDl
+            
+            // 如果 remote_dl 发生变化，先重命名文件夹
+            if (remoteDlChanged) {
+                val oldFolderId = originalSong!!.getActualFolderId()
+                val newFolderId = updatedSong.getActualFolderId()
+                
+                Log.d(TAG, "Remote DL changed, renaming folder from $oldFolderId to $newFolderId")
+                
+                val renameSuccess = songlistRepository.renameSongFolder(directoryUri, oldFolderId, newFolderId)
+                if (!renameSuccess) {
+                    _uiState.update { 
+                        it.copy(
+                            isSaving = false,
+                            error = "重命名文件夹失败"
+                        ) 
+                    }
+                    return@launch
+                }
+                
+                // 更新曲绘缓存的键
+                jacketUris.remove(oldFolderId)
+            }
+            
+            // 更新 songlist
             val success = songlistRepository.updateSong(directoryUri, updatedSong)
             
             if (success) {
@@ -189,9 +216,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                         updatedAllSongs
                     } else {
                         updatedAllSongs.filter { song ->
-                    song.id.contains(state.searchQuery, ignoreCase = true) ||
-                    song.getDisplayTitle().contains(state.searchQuery, ignoreCase = true) ||
-                    song.getDisplayArtist().contains(state.searchQuery, ignoreCase = true)
+                            song.id.contains(state.searchQuery, ignoreCase = true) ||
+                            song.getDisplayTitle().contains(state.searchQuery, ignoreCase = true) ||
+                            song.getDisplayArtist().contains(state.searchQuery, ignoreCase = true)
                         }
                     }
                     
