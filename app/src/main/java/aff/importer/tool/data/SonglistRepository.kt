@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import aff.importer.tool.data.model.Song
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -61,6 +62,255 @@ class SonglistRepository(private val context: Context) {
      */
     fun getDirectoryPath(directoryUri: Uri): String {
         return directoryUri.toString()
+    }
+
+    // ==================== Songlist 管理功能 ====================
+
+    /**
+     * 获取所有已导入的歌曲列表
+     */
+    suspend fun getAllSongs(directoryUri: Uri): List<Song> = withContext(Dispatchers.IO) {
+        try {
+            val songlistFile = getSonglistFile(directoryUri)
+                ?: return@withContext emptyList<Song>()
+
+            val content = readFileContent(songlistFile.uri) ?: return@withContext emptyList()
+            
+            parseSongsFromContent(content)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get all songs", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * 从 songlist 内容解析歌曲列表
+     */
+    private fun parseSongsFromContent(content: String): List<Song> {
+        val songs = mutableListOf<Song>()
+        
+        try {
+            val jsonElement = JsonParser.parseString(content)
+            
+            when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("songs") -> {
+                    val songsArray = jsonElement.asJsonObject.getAsJsonArray("songs")
+                    songsArray.forEach { element ->
+                        if (element.isJsonObject) {
+                            songs.add(Song.fromJsonObject(element.asJsonObject))
+                        }
+                    }
+                }
+                jsonElement.isJsonArray -> {
+                    jsonElement.asJsonArray.forEach { element ->
+                        if (element.isJsonObject) {
+                            songs.add(Song.fromJsonObject(element.asJsonObject))
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse songs", e)
+        }
+        
+        return songs
+    }
+
+    /**
+     * 获取歌曲曲绘的 URI
+     * 优先查找 base.jpg，如果不存在则查找 1080_base.jpg
+     */
+    suspend fun getSongJacketUri(directoryUri: Uri, songId: String): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
+            val songFolder = directory.findFile(songId) ?: return@withContext null
+            
+            // 优先查找 base.jpg
+            songFolder.findFile("base.jpg")?.let { return@withContext it.uri }
+            
+            // 备选 1080_base.jpg
+            songFolder.findFile("1080_base.jpg")?.let { return@withContext it.uri }
+            
+            // 尝试其他可能的命名
+            songFolder.listFiles().forEach { file ->
+                val name = file.name?.lowercase() ?: ""
+                if (name.contains("base") && (name.endsWith(".jpg") || name.endsWith(".jpeg"))) {
+                    return@withContext file.uri
+                }
+            }
+            
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get jacket for $songId", e)
+            null
+        }
+    }
+
+    /**
+     * 更新指定歌曲的元数据
+     */
+    suspend fun updateSong(directoryUri: Uri, updatedSong: Song): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val songlistFile = getSonglistFile(directoryUri)
+                ?: throw IllegalStateException("找不到 songlist 文件")
+
+            val content = readFileContent(songlistFile.uri)
+                ?: throw IllegalStateException("无法读取 songlist 文件")
+
+            // 创建备份
+            createBackup(DocumentFile.fromTreeUri(context, directoryUri)!!, songlistFile)
+
+            val gson = GsonBuilder()
+                .setPrettyPrinting()
+                .disableHtmlEscaping()
+                .create()
+
+            val jsonElement = JsonParser.parseString(content)
+            var updated = false
+
+            val resultContent = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("songs") -> {
+                    val rootObject = jsonElement.asJsonObject
+                    val songsArray = rootObject.getAsJsonArray("songs")
+                    
+                    for (i in 0 until songsArray.size()) {
+                        val songObj = songsArray[i].asJsonObject
+                        if (songObj.get("id")?.asString == updatedSong.id) {
+                            songsArray[i] = updatedSong.toJsonObject()
+                            updated = true
+                            break
+                        }
+                    }
+                    
+                    if (!updated) {
+                        throw IllegalStateException("找不到 id 为 ${updatedSong.id} 的歌曲")
+                    }
+                    
+                    formatWithTwoSpaces(gson.toJson(rootObject))
+                }
+                jsonElement.isJsonArray -> {
+                    val songsArray = jsonElement.asJsonArray
+                    
+                    for (i in 0 until songsArray.size()) {
+                        val songObj = songsArray[i].asJsonObject
+                        if (songObj.get("id")?.asString == updatedSong.id) {
+                            songsArray[i] = updatedSong.toJsonObject()
+                            updated = true
+                            break
+                        }
+                    }
+                    
+                    if (!updated) {
+                        throw IllegalStateException("找不到 id 为 ${updatedSong.id} 的歌曲")
+                    }
+                    
+                    formatWithTwoSpaces(gson.toJson(songsArray))
+                }
+                else -> throw IllegalStateException("songlist 格式不正确")
+            }
+
+            writeFileContent(songlistFile.uri, resultContent)
+            Log.d(TAG, "Updated song: ${updatedSong.id}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update song", e)
+            false
+        }
+    }
+
+    /**
+     * 删除指定歌曲（从 songlist 移除并删除文件夹）
+     */
+    suspend fun deleteSong(directoryUri: Uri, songId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+
+            // 1. 从 songlist 中移除
+            val songlistFile = directory.findFile(SONGLIST_FILENAME)
+                ?: throw IllegalStateException("找不到 songlist 文件")
+
+            val content = readFileContent(songlistFile.uri)
+                ?: throw IllegalStateException("无法读取 songlist 文件")
+
+            // 创建备份
+            createBackup(directory, songlistFile)
+
+            val gson = GsonBuilder()
+                .setPrettyPrinting()
+                .disableHtmlEscaping()
+                .create()
+
+            val jsonElement = JsonParser.parseString(content)
+            var removed = false
+
+            val resultContent = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("songs") -> {
+                    val rootObject = jsonElement.asJsonObject
+                    val songsArray = rootObject.getAsJsonArray("songs")
+                    val newSongsArray = JsonArray()
+                    
+                    songsArray.forEach { element ->
+                        val songObj = element.asJsonObject
+                        if (songObj.get("id")?.asString != songId) {
+                            newSongsArray.add(element)
+                        } else {
+                            removed = true
+                        }
+                    }
+                    
+                    if (!removed) {
+                        throw IllegalStateException("找不到 id 为 $songId 的歌曲")
+                    }
+                    
+                    rootObject.add("songs", newSongsArray)
+                    formatWithTwoSpaces(gson.toJson(rootObject))
+                }
+                jsonElement.isJsonArray -> {
+                    val songsArray = jsonElement.asJsonArray
+                    val newSongsArray = JsonArray()
+                    
+                    songsArray.forEach { element ->
+                        val songObj = element.asJsonObject
+                        if (songObj.get("id")?.asString != songId) {
+                            newSongsArray.add(element)
+                        } else {
+                            removed = true
+                        }
+                    }
+                    
+                    if (!removed) {
+                        throw IllegalStateException("找不到 id 为 $songId 的歌曲")
+                    }
+                    
+                    formatWithTwoSpaces(gson.toJson(newSongsArray))
+                }
+                else -> throw IllegalStateException("songlist 格式不正确")
+            }
+
+            writeFileContent(songlistFile.uri, resultContent)
+
+            // 2. 删除歌曲文件夹
+            val songFolder = directory.findFile(songId)
+            if (songFolder != null) {
+                val deleted = songFolder.delete()
+                Log.d(TAG, "Deleted folder $songId: $deleted")
+            }
+
+            Log.d(TAG, "Successfully deleted song: $songId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete song", e)
+            false
+        }
+    }
+
+    /**
+     * 获取 songlist 文件
+     */
+    private fun getSonglistFile(directoryUri: Uri): DocumentFile? {
+        val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return null
+        return directory.findFile(SONGLIST_FILENAME)
     }
     
     /**

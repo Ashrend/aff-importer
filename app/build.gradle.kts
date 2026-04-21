@@ -12,8 +12,8 @@ android {
         applicationId = "aff.importer.tool"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -82,6 +82,12 @@ dependencies {
 
     // Gson for JSON parsing
     implementation("com.google.code.gson:gson:2.11.0")
+
+    // Navigation Compose
+    implementation("androidx.navigation:navigation-compose:2.7.7")
+
+    // Coil for image loading
+    implementation("io.coil-kt:coil-compose:2.6.0")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
