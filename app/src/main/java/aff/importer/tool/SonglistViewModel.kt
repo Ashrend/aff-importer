@@ -2,21 +2,48 @@ package aff.importer.tool
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import aff.importer.tool.data.SonglistRepository
 import aff.importer.tool.data.model.Song
 import aff.importer.tool.data.model.SonglistUiState
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+
+/**
+ * 曲绘加载优先级
+ */
+enum class JacketPriority {
+    VISIBLE,      // 当前可见，最高优先级
+    PRELOAD,      // 预加载（屏幕外附近）
+    BACKGROUND    // 后台加载
+}
+
+/**
+ * 曲绘加载请求
+ */
+data class JacketLoadRequest(
+    val song: Song,
+    val priority: JacketPriority,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 /**
  * Songlist 管理界面的 ViewModel
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class SonglistViewModel(application: Application) : AndroidViewModel(application) {
+    
+    companion object {
+        private const val TAG = "SonglistViewModel"
+        private const val MAX_CONCURRENT_LOADS = 4  // 最大并发加载数
+        private const val PRELOAD_RANGE = 10        // 预加载范围（项数）
+    }
     
     private val songlistRepository = SonglistRepository(application)
     
@@ -25,11 +52,16 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     
     private var currentDirectoryUri: Uri? = null
     
-    // 缓存曲绘 URI
+    // 曲绘 URI 缓存
     private val jacketUris = mutableMapOf<String, Uri?>()
     
     // 标记是否已加载过
     private var hasLoaded = false
+    
+    // 曲绘加载队列和控制器
+    private val loadQueue = Channel<JacketLoadRequest>(Channel.UNLIMITED)
+    private val activeLoads = mutableMapOf<String, Job>()
+    private var loadDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_LOADS)
     
     /**
      * 强制刷新歌曲列表（用于导入后更新）
@@ -73,8 +105,8 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                 
                 hasLoaded = true
                 
-                // 后台预加载曲绘 URI（不阻塞 UI）
-                preloadJacketUris(songs, directoryUri)
+                // 不立即预加载，等待 UI 层通过 updateVisibleItems 触发
+                // 这样只有可见区域会优先加载
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -89,13 +121,14 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     /**
      * 懒加载曲绘 URI（按需加载）
      */
-    fun loadJacketUriLazy(songId: String) {
+    fun loadJacketUriLazy(song: Song) {
         val directoryUri = currentDirectoryUri ?: return
-        if (jacketUris.containsKey(songId)) return // 已缓存
+        val folderId = song.getActualFolderId()
+        if (jacketUris.containsKey(folderId)) return // 已缓存
         
         viewModelScope.launch {
-            val uri = songlistRepository.getSongJacketUri(directoryUri, songId)
-            jacketUris[songId] = uri
+            val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
+            jacketUris[folderId] = uri
             // 通知 UI 更新（可选，如果需要实时更新）
         }
     }
@@ -103,8 +136,8 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     /**
      * 获取曲绘 URI
      */
-    fun getJacketUri(songId: String): Uri? {
-        return jacketUris[songId]
+    fun getJacketUri(song: Song): Uri? {
+        return jacketUris[song.getActualFolderId()]
     }
     
     /**
@@ -215,11 +248,15 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(showDeleteConfirm = false) }
         
         viewModelScope.launch {
-            val success = songlistRepository.deleteSong(directoryUri, songToDelete.id)
+            // 使用原始 songId 从 songlist 中移除，使用 folderId 删除实际文件夹
+            val songId = songToDelete.id
+            val folderId = songToDelete.getActualFolderId()
+            
+            val success = songlistRepository.deleteSong(directoryUri, songId, folderId)
             
             if (success) {
                 // 从缓存中移除曲绘
-                jacketUris.remove(songToDelete.id)
+                jacketUris.remove(folderId)
                 
                 // 从本地列表移除
                 _uiState.update { state ->
@@ -275,31 +312,144 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     }
     
     /**
-     * 后台预加载曲绘 URI（分批处理，避免阻塞）
+     * 更新可见区域 - 由 UI 层在滚动时调用
+     * @param visibleItemIds 当前可见项的 ID 列表
+     * @param preloadItemIds 预加载范围内项的 ID 列表（屏幕外附近）
      */
-    private fun preloadJacketUris(songs: List<Song>, directoryUri: Uri) {
-        viewModelScope.launch {
-            // 分批处理，每批 10 个曲目
-            val batchSize = 10
-            val batches = songs.chunked(batchSize)
-            
-            batches.forEachIndexed { batchIndex, batch ->
-                // 加载这一批的曲绘
-                batch.forEach { song ->
-                    if (!jacketUris.containsKey(song.id)) {
-                        val uri = songlistRepository.getSongJacketUri(directoryUri, song.id)
-                        jacketUris[song.id] = uri
-                    }
-                }
-                
-                // 每加载完一批，通知 UI 刷新（让已加载的曲绘显示出来）
-                _uiState.update { it.copy() } // 触发一次状态更新
-                
-                // 批次之间稍作延迟，避免卡顿 UI
-                if (batchIndex < batches.size - 1) {
-                    kotlinx.coroutines.delay(50)
-                }
+    fun updateVisibleItems(
+        visibleItemIds: List<String>,
+        preloadItemIds: List<String> = emptyList()
+    ) {
+        val directoryUri = currentDirectoryUri ?: return
+        val allSongs = _uiState.value.songs
+        
+        // 构建 ID 到 Song 的映射
+        val songMap = allSongs.associateBy { it.id }
+        
+        // 1. 取消不在可见或预加载范围内的任务
+        val keepIds = (visibleItemIds + preloadItemIds).toSet()
+        activeLoads.keys.toList().forEach { id ->
+            if (id !in keepIds) {
+                activeLoads.remove(id)?.cancel()
+                Log.d(TAG, "Cancelled load for $id (out of range)")
             }
         }
+        
+        // 2. 优先加载可见项
+        visibleItemIds.forEach { id ->
+            val song = songMap[id] ?: return@forEach
+            val folderId = song.getActualFolderId()
+            
+            if (jacketUris.containsKey(folderId)) return@forEach
+            
+            // 如果已经在加载中，取消后重新以高优先级启动
+            activeLoads[folderId]?.cancel()
+            
+            val job = viewModelScope.launch(loadDispatcher) {
+                try {
+                    val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
+                    jacketUris[folderId] = uri
+                    
+                    // 主线程更新 UI
+                    withContext(Dispatchers.Main) {
+                        _uiState.update { it.copy() }
+                    }
+                } catch (e: CancellationException) {
+                    // 正常取消，忽略
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to load jacket for $folderId", e)
+                } finally {
+                    activeLoads.remove(folderId)
+                }
+            }
+            activeLoads[folderId] = job
+        }
+        
+        // 3. 预加载屏幕外附近的项（低优先级）
+        preloadItemIds.forEach { id ->
+            if (id in visibleItemIds) return@forEach  // 已在上面处理
+            
+            val song = songMap[id] ?: return@forEach
+            val folderId = song.getActualFolderId()
+            
+            if (jacketUris.containsKey(folderId)) return@forEach
+            if (activeLoads.containsKey(folderId)) return@forEach  // 已在加载中
+            
+            val job = viewModelScope.launch(loadDispatcher) {
+                // 延迟一下，确保可见项先加载
+                delay(100)
+                
+                try {
+                    // 检查是否已取消
+                    if (!isActive) return@launch
+                    
+                    val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
+                    jacketUris[folderId] = uri
+                    
+                    withContext(Dispatchers.Main) {
+                        _uiState.update { it.copy() }
+                    }
+                } catch (e: CancellationException) {
+                    // 正常取消
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to preload jacket for $folderId", e)
+                } finally {
+                    activeLoads.remove(folderId)
+                }
+            }
+            activeLoads[folderId] = job
+        }
+    }
+    
+    /**
+     * 启动后台加载服务 - 加载所有未加载的曲绘
+     * 在用户停止滚动后调用
+     */
+    fun startBackgroundLoading() {
+        val directoryUri = currentDirectoryUri ?: return
+        val allSongs = _uiState.value.songs
+        
+        viewModelScope.launch(loadDispatcher) {
+            allSongs.forEach { song ->
+                val folderId = song.getActualFolderId()
+                
+                // 跳过已缓存或正在加载的
+                if (jacketUris.containsKey(folderId) || activeLoads.containsKey(folderId)) {
+                    return@forEach
+                }
+                
+                try {
+                    val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
+                    jacketUris[folderId] = uri
+                    
+                    // 每加载10个通知一次 UI 更新
+                    if (jacketUris.size % 10 == 0) {
+                        withContext(Dispatchers.Main) {
+                            _uiState.update { it.copy() }
+                        }
+                    }
+                    
+                    // 短暂延迟，避免占用过多资源
+                    delay(20)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Background load failed for $folderId", e)
+                }
+            }
+            
+            // 最终刷新
+            withContext(Dispatchers.Main) {
+                _uiState.update { it.copy() }
+            }
+        }
+    }
+    
+    /**
+     * 强制刷新所有曲绘（用于目录变更或手动刷新）
+     */
+    fun clearJacketCache() {
+        jacketUris.clear()
+        activeLoads.values.forEach { it.cancel() }
+        activeLoads.clear()
+        _uiState.update { it.copy() }
     }
 }

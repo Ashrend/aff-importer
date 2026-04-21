@@ -48,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -60,11 +61,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
  * Songlist 管理主界面
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class)
 @Composable
 fun SonglistScreen(
     directoryUri: Uri?,
@@ -91,6 +95,47 @@ fun SonglistScreen(
         viewModel.loadSongs(directoryUri)
     }
     
+    // 监听滚动状态，优先加载可见区域的曲绘
+    LaunchedEffect(lazyGridState, uiState.songs) {
+        if (uiState.songs.isEmpty()) return@LaunchedEffect
+        
+        snapshotFlow { 
+            lazyGridState.layoutInfo.visibleItemsInfo.map { uiState.songs.getOrNull(it.index)?.id }.filterNotNull()
+        }
+            .distinctUntilChanged()
+            .debounce(50)  // 50ms 防抖，避免过于频繁的更新
+            .collect { visibleIds ->
+                // 计算预加载范围（可见项前后各 PRELOAD_RANGE 项）
+                val songs = uiState.songs
+                val visibleIndices = lazyGridState.layoutInfo.visibleItemsInfo.map { it.index }
+                val firstVisible = visibleIndices.minOrNull() ?: 0
+                val lastVisible = visibleIndices.maxOrNull() ?: 0
+                
+                // 扩展预加载范围
+                val preloadStart = (firstVisible - 20).coerceAtLeast(0)
+                val preloadEnd = (lastVisible + 20).coerceAtMost(songs.size - 1)
+                val preloadIds = songs.subList(preloadStart, preloadEnd + 1).map { it.id }
+                
+                // 通知 ViewModel 更新可见项
+                viewModel.updateVisibleItems(
+                    visibleItemIds = visibleIds,
+                    preloadItemIds = preloadIds
+                )
+            }
+    }
+    
+    // 监听滚动停止，启动后台加载
+    LaunchedEffect(lazyGridState) {
+        snapshotFlow { lazyGridState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { isScrolling ->
+                if (!isScrolling) {
+                    // 滚动停止，启动后台加载
+                    viewModel.startBackgroundLoading()
+                }
+            }
+    }
+    
     // 显示错误提示
     LaunchedEffect(uiState.error) {
         uiState.error?.let {
@@ -107,6 +152,14 @@ fun SonglistScreen(
             } ?: "删除完成"
             snackbarHostState.showSnackbar(message)
             viewModel.clearDeleteSuccess()
+        }
+    }
+    
+    // 显示保存成功提示
+    LaunchedEffect(uiState.saveSuccess) {
+        if (uiState.saveSuccess) {
+            snackbarHostState.showSnackbar("保存完成")
+            viewModel.clearSaveSuccess()
         }
     }
     
@@ -177,7 +230,7 @@ fun SonglistScreen(
                             // 直接使用预加载的 URI，无需复杂可见性检测
                             SongCardSimple(
                                 song = song,
-                                jacketUri = viewModel.getJacketUri(song.id),
+                                jacketUri = viewModel.getJacketUri(song),
                                 onClick = { viewModel.selectSong(song) },
                                 onDelete = { viewModel.showDeleteConfirm(song) }
                             )

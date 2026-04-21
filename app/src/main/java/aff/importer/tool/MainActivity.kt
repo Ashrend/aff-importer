@@ -11,8 +11,8 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -72,7 +72,7 @@ private fun MainScreen(
 ) {
     var selectedItem by remember { mutableIntStateOf(0) }
     val items = listOf("导入谱面", "曲目管理")
-    val icons = listOf(Icons.Default.Add, Icons.Default.List)
+    val icons = listOf(Icons.Default.Add, Icons.AutoMirrored.Filled.List)
     
     val directoryUri by mainViewModel.directoryUri.collectAsState()
     val importState by mainViewModel.importState.collectAsState()

@@ -1,4 +1,4 @@
-package aff.importer.tool.data.model
+ package aff.importer.tool.data.model
 
 import com.google.gson.JsonObject
 
@@ -110,6 +110,20 @@ data class Song(
             if (rating < 0) return "?"
             val base = rating.toString()
             return if (ratingPlus) "$base+" else base
+        }
+        
+        /**
+         * 获取显示用的标题（优先使用 title_localized.en）
+         */
+        fun getDisplayTitle(): String {
+            return titleLocalized.getDefault().takeIf { it.isNotBlank() } ?: ""
+        }
+        
+        /**
+         * 获取显示用的艺术家（优先使用 artist_localized.en，其次 artist）
+         */
+        fun getDisplayArtist(): String {
+            return artistLocalized.getDefault().takeIf { it.isNotBlank() } ?: artist
         }
     }
 
@@ -370,6 +384,14 @@ data class Song(
             if (date > 0) addProperty("date", date)
             if (version.isNotEmpty()) addProperty("version", version)
         }
+    }
+
+    /**
+     * 获取实际使用的乐曲文件夹ID
+     * 当 remote_dl 为 true 时，返回 dl_${id}，否则返回 id
+     */
+    fun getActualFolderId(): String {
+        return if (remoteDl) "dl_$id" else id
     }
 
     /**

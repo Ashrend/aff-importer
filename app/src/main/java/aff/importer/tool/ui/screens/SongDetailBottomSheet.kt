@@ -104,15 +104,17 @@ private fun SongDetailContent(
 ) {
     // 编辑状态 - 基本字段
     var id by remember { mutableStateOf(song.id) }
-    var titleEn by remember { mutableStateOf(song.titleLocalized.en) }
+    // 标题多语言（英文是默认值，直接填在"默认"位置）
+    var titleDefault by remember { mutableStateOf(song.titleLocalized.en) }
     var titleJa by remember { mutableStateOf(song.titleLocalized.ja) }
     var titleKo by remember { mutableStateOf(song.titleLocalized.ko) }
     var titleZhHans by remember { mutableStateOf(song.titleLocalized.zhHans) }
     var titleZhHant by remember { mutableStateOf(song.titleLocalized.zhHant) }
     
-    var artist by remember { mutableStateOf(song.artist) }
-    var artistEn by remember { mutableStateOf(song.artistLocalized.en) }
+    // 艺术家（英文是默认值，直接填在"默认"位置）
+    var artistDefault by remember { mutableStateOf(song.artist.takeIf { it.isNotBlank() } ?: song.artistLocalized.en) }
     var artistJa by remember { mutableStateOf(song.artistLocalized.ja) }
+    var artistKo by remember { mutableStateOf(song.artistLocalized.ko) }
     
     var bpm by remember { mutableStateOf(song.bpm) }
     var bpmBase by remember { mutableStateOf(song.bpmBase.toString()) }
@@ -123,6 +125,8 @@ private fun SongDetailContent(
     var side by remember { mutableStateOf(song.side.toString()) }
     var version by remember { mutableStateOf(song.version) }
     var idx by remember { mutableStateOf(song.idx.toString()) }
+    var audioPreview by remember { mutableStateOf(song.audioPreview.toString()) }
+    var audioPreviewEnd by remember { mutableStateOf(song.audioPreviewEnd.toString()) }
     
     var worldUnlock by remember { mutableStateOf(song.worldUnlock) }
     var remoteDl by remember { mutableStateOf(song.remoteDl) }
@@ -167,12 +171,12 @@ private fun SongDetailContent(
             singleLine = true
         )
 
-        // 标题（多语言）
+        // 标题（多语言）- 英文是默认值
         SectionTitle("曲目标题 (title_localized)")
         OutlinedTextField(
-            value = titleEn,
-            onValueChange = { titleEn = it },
-            label = { Text("英文 (en) *") },
+            value = titleDefault,
+            onValueChange = { titleDefault = it },
+            label = { Text("默认（英文）*") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
@@ -180,15 +184,7 @@ private fun SongDetailContent(
         OutlinedTextField(
             value = titleJa,
             onValueChange = { titleJa = it },
-            label = { Text("日文 (ja)") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-
-        OutlinedTextField(
-            value = titleKo,
-            onValueChange = { titleKo = it },
-            label = { Text("韩文 (ko)") },
+            label = { Text("日文") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
@@ -197,6 +193,14 @@ private fun SongDetailContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            OutlinedTextField(
+                value = titleKo,
+                onValueChange = { titleKo = it },
+                label = { Text("韩文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+
             OutlinedTextField(
                 value = titleZhHans,
                 onValueChange = { titleZhHans = it },
@@ -214,31 +218,59 @@ private fun SongDetailContent(
             )
         }
 
-        // 艺术家
+        // 艺术家 - 英文是默认值
         SectionTitle("艺术家")
         OutlinedTextField(
-            value = artist,
-            onValueChange = { artist = it },
-            label = { Text("默认艺术家") },
+            value = artistDefault,
+            onValueChange = { artistDefault = it },
+            label = { Text("默认（英文）") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
 
-        OutlinedTextField(
-            value = artistEn,
-            onValueChange = { artistEn = it },
-            label = { Text("英文 (artist_localized.en)") },
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = artistJa,
+                onValueChange = { artistJa = it },
+                label = { Text("日文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
 
-        OutlinedTextField(
-            value = artistJa,
-            onValueChange = { artistJa = it },
-            label = { Text("日文 (artist_localized.ja)") },
+            OutlinedTextField(
+                value = artistKo,
+                onValueChange = { artistKo = it },
+                label = { Text("韩文") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
+        
+        // 音频预览
+        SectionTitle("音频预览 (毫秒)")
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = audioPreview,
+                onValueChange = { audioPreview = it },
+                label = { Text("开始 (audioPreview)") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+
+            OutlinedTextField(
+                value = audioPreviewEnd,
+                onValueChange = { audioPreviewEnd = it },
+                label = { Text("结束 (audioPreviewEnd)") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
 
         // BPM 信息
         SectionTitle("BPM 信息")
@@ -435,16 +467,17 @@ private fun SongDetailContent(
                         idx = idx.toIntOrNull() ?: song.idx,
                         id = id,
                         titleLocalized = Song.LocalizedText(
-                            en = titleEn,
+                            en = titleDefault,
                             ja = titleJa,
                             ko = titleKo,
                             zhHans = titleZhHans,
                             zhHant = titleZhHant
                         ),
-                        artist = artist,
+                        artist = artistDefault,
                         artistLocalized = Song.LocalizedText(
-                            en = artistEn,
-                            ja = artistJa
+                            en = artistDefault,
+                            ja = artistJa,
+                            ko = artistKo
                         ),
                         bpm = bpm,
                         bpmBase = bpmBase.toDoubleOrNull() ?: song.bpmBase,
@@ -454,6 +487,8 @@ private fun SongDetailContent(
                         bgInverse = bgInverse,
                         side = side.toIntOrNull() ?: song.side,
                         version = version,
+                        audioPreview = audioPreview.toIntOrNull() ?: song.audioPreview,
+                        audioPreviewEnd = audioPreviewEnd.toIntOrNull() ?: song.audioPreviewEnd,
                         worldUnlock = worldUnlock,
                         remoteDl = remoteDl,
                         difficulties = difficulties
@@ -461,7 +496,7 @@ private fun SongDetailContent(
                     onSave(updatedSong)
                 },
                 modifier = Modifier.weight(1f),
-                enabled = !isSaving && titleEn.isNotBlank()
+                enabled = !isSaving && titleDefault.isNotBlank()
             ) {
                 if (isSaving) {
                     CircularProgressIndicator(
@@ -495,6 +530,9 @@ private fun DifficultyEditor(
         4 to "ETR (Eternal)"
     )
     
+    // 高级选项展开状态（仅 BYD/ETR）
+    var showAdvancedOptions by remember { mutableStateOf(false) }
+    
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -510,15 +548,24 @@ private fun DifficultyEditor(
                 color = MaterialTheme.colorScheme.primary
             )
             
-            // 删除按钮（仅额外难度显示）
-            if (canDelete && onDelete != null) {
-                TextButton(
-                    onClick = onDelete,
-                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("删除此难度")
+            Row {
+                // 高级选项开关（仅 BYD/ETR）
+                if (difficulty.ratingClass >= 3) {
+                    TextButton(onClick = { showAdvancedOptions = !showAdvancedOptions }) {
+                        Text(if (showAdvancedOptions) "收起高级选项" else "高级选项")
+                    }
+                }
+                
+                // 删除按钮（仅额外难度显示）
+                if (canDelete && onDelete != null) {
+                    TextButton(
+                        onClick = onDelete,
+                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("删除此难度")
+                    }
                 }
             }
         }
@@ -569,6 +616,213 @@ private fun DifficultyEditor(
                     onCheckedChange = { onUpdate(difficulty.copy(ratingPlus = it)) }
                 )
                 Text("有+号")
+            }
+        }
+        
+        // BYD/ETR 高级选项
+        if (difficulty.ratingClass >= 3 && showAdvancedOptions) {
+            AdvancedDifficultyOptions(
+                difficulty = difficulty,
+                onUpdate = onUpdate
+            )
+        }
+    }
+}
+
+/**
+ * BYD/ETR 难度高级选项编辑器
+ */
+@Composable
+private fun AdvancedDifficultyOptions(
+    difficulty: Song.Difficulty,
+    onUpdate: (Song.Difficulty) -> Unit
+) {
+    // 使用独立的字符串状态来存储用户输入，避免数值转换问题
+    var dateInput by remember(difficulty.date) { 
+        mutableStateOf(if (difficulty.date > 0) difficulty.date.toString() else "") 
+    }
+    var bpmBaseInput by remember(difficulty.bpmBase) { 
+        mutableStateOf(if (difficulty.bpmBase > 0) difficulty.bpmBase.toString() else "") 
+    }
+    
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+            )
+            .padding(12.dp)
+    ) {
+        Text(
+            text = "难度特定覆盖设置",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        
+        // 标题覆盖 - 默认英文，支持日文
+        SectionTitle("标题覆盖 (title_localized)")
+        OutlinedTextField(
+            value = difficulty.titleLocalized.en,
+            onValueChange = { 
+                onUpdate(difficulty.copy(titleLocalized = difficulty.titleLocalized.copy(en = it)))
+            },
+            label = { Text("默认（英文）") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = difficulty.titleLocalized.ja,
+            onValueChange = { 
+                onUpdate(difficulty.copy(titleLocalized = difficulty.titleLocalized.copy(ja = it)))
+            },
+            label = { Text("日文") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        
+        // 艺术家覆盖（仅支持普通artist字段，不支持localized）
+        SectionTitle("艺术家覆盖 (artist)")
+        OutlinedTextField(
+            value = difficulty.artist,
+            onValueChange = { onUpdate(difficulty.copy(artist = it)) },
+            label = { Text("artist") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        
+        // BPM 覆盖
+        SectionTitle("BPM 覆盖")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = difficulty.bpm,
+                onValueChange = { onUpdate(difficulty.copy(bpm = it)) },
+                label = { Text("bpm") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = bpmBaseInput,
+                onValueChange = { 
+                    bpmBaseInput = it
+                    val newValue = it.toDoubleOrNull() ?: 0.0
+                    onUpdate(difficulty.copy(bpmBase = newValue))
+                },
+                label = { Text("bpm_base") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
+        
+        // 背景覆盖
+        SectionTitle("背景覆盖")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = difficulty.bg,
+                onValueChange = { onUpdate(difficulty.copy(bg = it)) },
+                label = { Text("bg") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = difficulty.bgInverse,
+                onValueChange = { onUpdate(difficulty.copy(bgInverse = it)) },
+                label = { Text("bg_inverse") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
+        
+        // 版本和日期
+        SectionTitle("版本和日期")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = difficulty.version,
+                onValueChange = { onUpdate(difficulty.copy(version = it)) },
+                label = { Text("version") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = dateInput,
+                onValueChange = { 
+                    dateInput = it
+                    val newValue = it.toLongOrNull() ?: 0L
+                    onUpdate(difficulty.copy(date = newValue))
+                },
+                label = { Text("date (时间戳)") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+        }
+        
+        // 复选框选项
+        SectionTitle("其他选项")
+        Column {
+            // jacketOverride
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onUpdate(difficulty.copy(jacketOverride = !difficulty.jacketOverride)) }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = difficulty.jacketOverride,
+                    onCheckedChange = { onUpdate(difficulty.copy(jacketOverride = it)) }
+                )
+                Text("jacketOverride (难度特定封面)")
+            }
+            
+            // audioOverride
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onUpdate(difficulty.copy(audioOverride = !difficulty.audioOverride)) }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = difficulty.audioOverride,
+                    onCheckedChange = { onUpdate(difficulty.copy(audioOverride = it)) }
+                )
+                Text("audioOverride (难度特定音频)")
+            }
+            
+            // hidden_until_unlocked
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onUpdate(difficulty.copy(hiddenUntilUnlocked = !difficulty.hiddenUntilUnlocked)) }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = difficulty.hiddenUntilUnlocked,
+                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntilUnlocked = it)) }
+                )
+                Text("hidden_until_unlocked (解锁前隐藏)")
+            }
+            
+            // world_unlock
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onUpdate(difficulty.copy(worldUnlock = !difficulty.worldUnlock)) }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = difficulty.worldUnlock,
+                    onCheckedChange = { onUpdate(difficulty.copy(worldUnlock = it)) }
+                )
+                Text("world_unlock (需要世界模式解锁)")
             }
         }
     }
