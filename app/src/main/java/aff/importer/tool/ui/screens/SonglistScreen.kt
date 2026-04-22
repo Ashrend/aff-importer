@@ -360,7 +360,7 @@ private fun SongCardSimple(
                             .crossfade(50)
                             .memoryCachePolicy(CachePolicy.ENABLED)
                             .diskCachePolicy(CachePolicy.ENABLED)
-                            .size(150, 150)
+                            .size(256, 256)
                             .build(),
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),

@@ -1,7 +1,8 @@
 # Gradle files
 .gradle/
 build/
-app/release
+app/release/
+documents/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
