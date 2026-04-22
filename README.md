@@ -1,17 +1,18 @@
-# aff 谱面导入工具
+![我的自定义图标](aff_importer_icon_256.png)
+# Arcaea资产管理工具
 
-aff 自制谱面导入工具，支持导入 ZIP 格式的谱面包。
+适用于Android平台的Arcaea资产管理工具。
+
 
 ## 功能
 
 - ZIP 谱面包解析，自动提取元数据并追加到 `songlist`
-- 对现有乐曲元数据的预览与编辑
-- Material You 动态主题
+- 对现有`songlist`元数据的预览与编辑
+- 对现有`packlist`元数据的预览与编辑
 
-## TODO
+## TODO LIST
 
 - 乐曲批量编辑功能
-- `packlist` 相关资源的导入与管理
 - `unlocks` 相关资源的导入与管理
 - 非加密 `arcpkg` 档案的有限支持
 
