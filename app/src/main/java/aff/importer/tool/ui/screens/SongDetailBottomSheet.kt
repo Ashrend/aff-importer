@@ -1,5 +1,6 @@
 package aff.importer.tool.ui.screens
 
+import aff.importer.tool.data.model.LocalizedText
 import aff.importer.tool.data.model.Song
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -549,7 +550,7 @@ private fun SongDetailContent(
                     val updatedSong = song.copy(
                         idx = idx.toIntOrNull() ?: song.idx,
                         id = id,
-                        titleLocalized = Song.LocalizedText(
+                        titleLocalized = LocalizedText(
                             en = titleDefault,
                             ja = titleJa,
                             ko = titleKo,
@@ -557,7 +558,7 @@ private fun SongDetailContent(
                             zhHant = titleZhHant
                         ),
                         artist = artistDefault,
-                        artistLocalized = Song.LocalizedText(
+                        artistLocalized = LocalizedText(
                             en = artistDefault,
                             ja = artistJa,
                             ko = artistKo
@@ -575,7 +576,7 @@ private fun SongDetailContent(
                         worldUnlock = worldUnlock,
                         remoteDl = remoteDl,
                         bydLocalUnlock = bydLocalUnlock,
-                        sourceLocalized = Song.LocalizedText(
+                        sourceLocalized = LocalizedText(
                             en = sourceEn,
                             ja = sourceJa,
                             ko = sourceKo,
