@@ -1,6 +1,7 @@
 package aff.importer.tool
 
 import aff.importer.tool.ui.screens.ImportScreen
+import aff.importer.tool.ui.screens.PacklistScreen
 import aff.importer.tool.ui.screens.SonglistScreen
 import aff.importer.tool.ui.theme.ArcaeaImporterTheme
 import android.os.Bundle
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -37,6 +39,7 @@ class MainActivity : ComponentActivity() {
     
     private val mainViewModel: MainViewModel by viewModels()
     private val songlistViewModel: SonglistViewModel by viewModels()
+    private val packlistViewModel: PacklistViewModel by viewModels()
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,7 +57,8 @@ class MainActivity : ComponentActivity() {
                 ) {
                     MainScreen(
                         mainViewModel = mainViewModel,
-                        songlistViewModel = songlistViewModel
+                        songlistViewModel = songlistViewModel,
+                        packlistViewModel = packlistViewModel
                     )
                 }
             }
@@ -68,30 +72,24 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainScreen(
     mainViewModel: MainViewModel,
-    songlistViewModel: SonglistViewModel
+    songlistViewModel: SonglistViewModel,
+    packlistViewModel: PacklistViewModel
 ) {
     var selectedItem by remember { mutableIntStateOf(0) }
-    val items = listOf("导入谱面", "曲目管理")
-    val icons = listOf(Icons.Default.Add, Icons.AutoMirrored.Filled.List)
-    
+    val items = listOf("导入谱面", "曲目管理", "曲包管理")
+    val icons = listOf(Icons.Default.Add, Icons.AutoMirrored.Filled.List, Icons.Default.Menu)
+
     val directoryUri by mainViewModel.directoryUri.collectAsState()
     val importState by mainViewModel.importState.collectAsState()
-    
-    // 监听导入成功，自动刷新曲目管理
+
+    // 监听导入成功，自动刷新曲目管理和曲包管理
     LaunchedEffect(importState) {
         if (importState is aff.importer.tool.data.model.ImportState.Success) {
-            // 导入成功后刷新曲目列表
             songlistViewModel.refreshSongs(directoryUri)
+            packlistViewModel.refreshPacks(directoryUri)
         }
     }
-    
-    // 切换到曲目管理页面时刷新
-    LaunchedEffect(selectedItem) {
-        if (selectedItem == 1 && directoryUri != null) {
-            songlistViewModel.refreshSongs(directoryUri)
-        }
-    }
-    
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -120,6 +118,14 @@ private fun MainScreen(
                     directoryUri = directoryUri,
                     modifier = Modifier.padding(paddingValues),
                     viewModel = songlistViewModel
+                )
+            }
+            2 -> {
+                // 曲包管理页面
+                PacklistScreen(
+                    directoryUri = directoryUri,
+                    modifier = Modifier.padding(paddingValues),
+                    viewModel = packlistViewModel
                 )
             }
         }

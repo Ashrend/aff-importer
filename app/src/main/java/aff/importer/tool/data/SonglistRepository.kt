@@ -46,6 +46,7 @@ class SonglistRepository(private val context: Context) {
     companion object {
         private const val TAG = "SonglistRepository"
         private const val SONGLIST_FILENAME = "songlist"
+        private const val PACKLIST_FILENAME = "packlist"
         private const val BACKUP_FILENAME = "songlist.backup"
     }
     
@@ -114,6 +115,167 @@ class SonglistRepository(private val context: Context) {
         }
         
         return songs
+    }
+
+    // ==================== Packlist 读取功能 ====================
+
+    /**
+     * 检查指定 URI 的目录中是否存在 packlist 文件
+     */
+    fun hasPacklistFile(directoryUri: Uri): Boolean {
+        val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return false
+        return directory.findFile(PACKLIST_FILENAME)?.isFile == true
+    }
+
+    /**
+     * 获取所有曲包列表
+     */
+    suspend fun getAllPacks(directoryUri: Uri): List<aff.importer.tool.data.model.Pack> = withContext(Dispatchers.IO) {
+        try {
+            val packlistFile = getPacklistFile(directoryUri)
+                ?: return@withContext emptyList<aff.importer.tool.data.model.Pack>()
+
+            val content = readFileContent(packlistFile.uri) ?: return@withContext emptyList()
+
+            parsePacksFromContent(content)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get all packs", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * 从 packlist 内容解析曲包列表
+     */
+    private fun parsePacksFromContent(content: String): List<aff.importer.tool.data.model.Pack> {
+        val packs = mutableListOf<aff.importer.tool.data.model.Pack>()
+
+        try {
+            val jsonElement = JsonParser.parseString(content)
+
+            when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
+                    val packsArray = jsonElement.asJsonObject.getAsJsonArray("packs")
+                    packsArray.forEach { element ->
+                        if (element.isJsonObject) {
+                            packs.add(aff.importer.tool.data.model.Pack.fromJsonObject(element.asJsonObject))
+                        }
+                    }
+                }
+                jsonElement.isJsonArray -> {
+                    jsonElement.asJsonArray.forEach { element ->
+                        if (element.isJsonObject) {
+                            packs.add(aff.importer.tool.data.model.Pack.fromJsonObject(element.asJsonObject))
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse packs", e)
+        }
+
+        return packs
+    }
+
+    /**
+     * 获取曲包横幅图片的 URI
+     * 查找 songs/pack/select_{pack_id}.png
+     */
+    suspend fun getPackBannerUri(directoryUri: Uri, packId: String): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
+            val packFolder = directory.findFile("pack") ?: return@withContext null
+
+            // 优先查找 select_{pack_id}.png
+            packFolder.findFile("select_$packId.png")?.let { return@withContext it.uri }
+
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get banner for $packId", e)
+            null
+        }
+    }
+
+    /**
+     * 更新指定曲包的元数据
+     */
+    suspend fun updatePack(directoryUri: Uri, updatedPack: aff.importer.tool.data.model.Pack): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val packlistFile = getPacklistFile(directoryUri)
+                ?: throw IllegalStateException("找不到 packlist 文件")
+
+            val content = readFileContent(packlistFile.uri)
+                ?: throw IllegalStateException("无法读取 packlist 文件")
+
+            // 创建备份
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+            createBackup(directory, packlistFile, "packlist.backup")
+
+            val gson = GsonBuilder()
+                .setPrettyPrinting()
+                .disableHtmlEscaping()
+                .create()
+
+            val jsonElement = JsonParser.parseString(content)
+            var updated = false
+
+            val resultContent = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
+                    val rootObject = jsonElement.asJsonObject
+                    val packsArray = rootObject.getAsJsonArray("packs")
+
+                    for (i in 0 until packsArray.size()) {
+                        val packObj = packsArray[i].asJsonObject
+                        if (packObj.get("id")?.asString == updatedPack.id) {
+                            packsArray[i] = updatedPack.toJsonObject()
+                            updated = true
+                            break
+                        }
+                    }
+
+                    if (!updated) {
+                        throw IllegalStateException("找不到 id 为 ${updatedPack.id} 的曲包")
+                    }
+
+                    formatWithTwoSpaces(gson.toJson(rootObject))
+                }
+                jsonElement.isJsonArray -> {
+                    val packsArray = jsonElement.asJsonArray
+
+                    for (i in 0 until packsArray.size()) {
+                        val packObj = packsArray[i].asJsonObject
+                        if (packObj.get("id")?.asString == updatedPack.id) {
+                            packsArray[i] = updatedPack.toJsonObject()
+                            updated = true
+                            break
+                        }
+                    }
+
+                    if (!updated) {
+                        throw IllegalStateException("找不到 id 为 ${updatedPack.id} 的曲包")
+                    }
+
+                    formatWithTwoSpaces(gson.toJson(packsArray))
+                }
+                else -> throw IllegalStateException("packlist 格式不正确")
+            }
+
+            writeFileContent(packlistFile.uri, resultContent)
+            Log.d(TAG, "Updated pack: ${updatedPack.id}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update pack", e)
+            false
+        }
+    }
+
+    /**
+     * 获取 packlist 文件
+     */
+    private fun getPacklistFile(directoryUri: Uri): DocumentFile? {
+        val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return null
+        return directory.findFile(PACKLIST_FILENAME)
     }
 
     /**
@@ -650,17 +812,17 @@ class SonglistRepository(private val context: Context) {
     /**
      * 创建备份文件
      */
-    private fun createBackup(directory: DocumentFile, originalFile: DocumentFile) {
+    private fun createBackup(directory: DocumentFile, originalFile: DocumentFile, backupName: String = BACKUP_FILENAME) {
         try {
-            directory.findFile(BACKUP_FILENAME)?.delete()
-            val backupFile = directory.createFile("application/octet-stream", BACKUP_FILENAME)
+            directory.findFile(backupName)?.delete()
+            val backupFile = directory.createFile("application/octet-stream", backupName)
             if (backupFile != null) {
                 context.contentResolver.openInputStream(originalFile.uri)?.use { input ->
                     context.contentResolver.openOutputStream(backupFile.uri)?.use { output ->
                         input.copyTo(output)
                     }
                 }
-                Log.d(TAG, "Created backup: $BACKUP_FILENAME")
+                Log.d(TAG, "Created backup: $backupName")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to create backup", e)
