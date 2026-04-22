@@ -96,7 +96,7 @@ data class Song(
         val jacketNight: String = "",
         val jacketOverride: Boolean = false,
         val audioOverride: Boolean = false,
-        val hiddenUntil: Boolean = false,
+        val hiddenUntil: String = "",
         val bg: String = "",
         val bgInverse: String = "",
         val worldUnlock: Boolean = false,
@@ -249,7 +249,7 @@ data class Song(
                 jacketNight = json.get("jacket_night")?.asString ?: "",
                 jacketOverride = json.get("jacketOverride")?.asBoolean ?: false,
                 audioOverride = json.get("audioOverride")?.asBoolean ?: false,
-                hiddenUntil = json.get("hidden_until")?.asBoolean ?: false,
+                hiddenUntil = json.get("hidden_until")?.asString ?: "",
                 bg = json.get("bg")?.asString ?: "",
                 bgInverse = json.get("bg_inverse")?.asString ?: "",
                 worldUnlock = json.get("world_unlock")?.asBoolean ?: false,
@@ -377,7 +377,7 @@ data class Song(
             if (jacketNight.isNotEmpty()) addProperty("jacket_night", jacketNight)
             if (jacketOverride) addProperty("jacketOverride", true)
             if (audioOverride) addProperty("audioOverride", true)
-            if (hiddenUntil) addProperty("hidden_until", true)
+            if (hiddenUntil.isNotEmpty()) addProperty("hidden_until", hiddenUntil)
             if (bg.isNotEmpty()) addProperty("bg", bg)
             if (bgInverse.isNotEmpty()) addProperty("bg_inverse", bgInverse)
             if (worldUnlock) addProperty("world_unlock", true)

@@ -25,7 +25,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -709,18 +713,10 @@ private fun DifficultyEditor(
         
         // 隐藏选项（PST/PRS/FTR 也支持 hidden_until）
         if (difficulty.ratingClass <= 2) {
-            Row(
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onUpdate(difficulty.copy(hiddenUntil = !difficulty.hiddenUntil)) }
-            ) {
-                androidx.compose.material3.Checkbox(
-                    checked = difficulty.hiddenUntil,
-                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntil = it)) }
-                )
-                Text("解锁前隐藏 (hidden_until)")
-            }
+            HiddenUntilDropdown(
+                value = difficulty.hiddenUntil,
+                onValueChange = { onUpdate(difficulty.copy(hiddenUntil = it)) }
+            )
         }
         
         // BYD/ETR 高级选项
@@ -902,18 +898,10 @@ private fun AdvancedDifficultyOptions(
             }
             
             // hidden_until
-            Row(
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onUpdate(difficulty.copy(hiddenUntil = !difficulty.hiddenUntil)) }
-            ) {
-                androidx.compose.material3.Checkbox(
-                    checked = difficulty.hiddenUntil,
-                    onCheckedChange = { onUpdate(difficulty.copy(hiddenUntil = it)) }
-                )
-                Text("hidden_until (解锁前隐藏)")
-            }
+            HiddenUntilDropdown(
+                value = difficulty.hiddenUntil,
+                onValueChange = { onUpdate(difficulty.copy(hiddenUntil = it)) }
+            )
             
             // world_unlock
             Row(
@@ -927,6 +915,60 @@ private fun AdvancedDifficultyOptions(
                     onCheckedChange = { onUpdate(difficulty.copy(worldUnlock = it)) }
                 )
                 Text("world_unlock (需要世界模式解锁)")
+            }
+        }
+    }
+}
+
+/**
+ * hidden_until 下拉选择器
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HiddenUntilDropdown(
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val options = listOf(
+        "" to "不设置 (默认)",
+        "none" to "none",
+        "difficulty" to "difficulty",
+        "song" to "song",
+        "always" to "always",
+        "unlockCondition" to "unlockCondition"
+    )
+
+    val selectedLabel = options.find { it.first == value }?.second ?: "不设置 (默认)"
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("隐藏条件 (hidden_until)") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+        )
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { (optionValue, optionLabel) ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(optionLabel) },
+                    onClick = {
+                        onValueChange(optionValue)
+                        expanded = false
+                    }
+                )
             }
         }
     }
