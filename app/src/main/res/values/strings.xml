@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Arcaea 谱面导入</string>
+    <string name="app_name">Arcaea资产管理工具</string>
     
     <!-- UI Labels -->
     <string name="select_directory">选择 songlist 目录</string>
