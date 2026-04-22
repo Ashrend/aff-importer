@@ -118,28 +118,24 @@ class SonglistRepository(private val context: Context) {
 
     /**
      * 获取歌曲曲绘的 URI
-     * 优先查找 base.jpg，如果不存在则查找 1080_base.jpg
+     * 优先查找缩略图 base_256.jpg / 1080_base_256.jpg，
+     * 找不到则查找完整图 base.jpg / 1080_base.jpg，
+     * 都没有则返回 null
      * @param folderId 实际的文件夹ID（已经处理过 remote_dl 的情况）
      */
     suspend fun getSongJacketUri(directoryUri: Uri, folderId: String): Uri? = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
             val songFolder = directory.findFile(folderId) ?: return@withContext null
-            
-            // 优先查找 base.jpg
+
+            // 优先查找 256 缩略图
+            songFolder.findFile("base_256.jpg")?.let { return@withContext it.uri }
+            songFolder.findFile("1080_base_256.jpg")?.let { return@withContext it.uri }
+
+            // 备选完整图
             songFolder.findFile("base.jpg")?.let { return@withContext it.uri }
-            
-            // 备选 1080_base.jpg
             songFolder.findFile("1080_base.jpg")?.let { return@withContext it.uri }
-            
-            // 尝试其他可能的命名
-            songFolder.listFiles().forEach { file ->
-                val name = file.name?.lowercase() ?: ""
-                if (name.contains("base") && (name.endsWith(".jpg") || name.endsWith(".jpeg"))) {
-                    return@withContext file.uri
-                }
-            }
-            
+
             null
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get jacket for $folderId", e)
