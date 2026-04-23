@@ -11,10 +11,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
@@ -46,7 +43,6 @@ class SonglistRepository(private val context: Context) {
     companion object {
         private const val TAG = "SonglistRepository"
         private const val SONGLIST_FILENAME = "songlist"
-        private const val PACKLIST_FILENAME = "packlist"
         private const val BACKUP_FILENAME = "songlist.backup"
     }
     
@@ -75,7 +71,7 @@ class SonglistRepository(private val context: Context) {
             val songlistFile = getSonglistFile(directoryUri)
                 ?: return@withContext emptyList<Song>()
 
-            val content = readFileContent(songlistFile.uri) ?: return@withContext emptyList()
+            val content = FileUtils.readFileContent(context, songlistFile.uri) ?: return@withContext emptyList()
             
             parseSongsFromContent(content)
         } catch (e: Exception) {
@@ -117,167 +113,6 @@ class SonglistRepository(private val context: Context) {
         return songs
     }
 
-    // ==================== Packlist 读取功能 ====================
-
-    /**
-     * 检查指定 URI 的目录中是否存在 packlist 文件
-     */
-    fun hasPacklistFile(directoryUri: Uri): Boolean {
-        val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return false
-        return directory.findFile(PACKLIST_FILENAME)?.isFile == true
-    }
-
-    /**
-     * 获取所有曲包列表
-     */
-    suspend fun getAllPacks(directoryUri: Uri): List<aff.importer.tool.data.model.Pack> = withContext(Dispatchers.IO) {
-        try {
-            val packlistFile = getPacklistFile(directoryUri)
-                ?: return@withContext emptyList<aff.importer.tool.data.model.Pack>()
-
-            val content = readFileContent(packlistFile.uri) ?: return@withContext emptyList()
-
-            parsePacksFromContent(content)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get all packs", e)
-            emptyList()
-        }
-    }
-
-    /**
-     * 从 packlist 内容解析曲包列表
-     */
-    private fun parsePacksFromContent(content: String): List<aff.importer.tool.data.model.Pack> {
-        val packs = mutableListOf<aff.importer.tool.data.model.Pack>()
-
-        try {
-            val jsonElement = JsonParser.parseString(content)
-
-            when {
-                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
-                    val packsArray = jsonElement.asJsonObject.getAsJsonArray("packs")
-                    packsArray.forEach { element ->
-                        if (element.isJsonObject) {
-                            packs.add(aff.importer.tool.data.model.Pack.fromJsonObject(element.asJsonObject))
-                        }
-                    }
-                }
-                jsonElement.isJsonArray -> {
-                    jsonElement.asJsonArray.forEach { element ->
-                        if (element.isJsonObject) {
-                            packs.add(aff.importer.tool.data.model.Pack.fromJsonObject(element.asJsonObject))
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse packs", e)
-        }
-
-        return packs
-    }
-
-    /**
-     * 获取曲包横幅图片的 URI
-     * 查找 songs/pack/select_{pack_id}.png
-     */
-    suspend fun getPackBannerUri(directoryUri: Uri, packId: String): Uri? = withContext(Dispatchers.IO) {
-        try {
-            val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
-            val packFolder = directory.findFile("pack") ?: return@withContext null
-
-            // 优先查找 select_{pack_id}.png
-            packFolder.findFile("select_$packId.png")?.let { return@withContext it.uri }
-
-            null
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get banner for $packId", e)
-            null
-        }
-    }
-
-    /**
-     * 更新指定曲包的元数据
-     */
-    suspend fun updatePack(directoryUri: Uri, updatedPack: aff.importer.tool.data.model.Pack): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val packlistFile = getPacklistFile(directoryUri)
-                ?: throw IllegalStateException("找不到 packlist 文件")
-
-            val content = readFileContent(packlistFile.uri)
-                ?: throw IllegalStateException("无法读取 packlist 文件")
-
-            // 创建备份
-            val directory = DocumentFile.fromTreeUri(context, directoryUri)
-                ?: throw IllegalStateException("无法访问目录")
-            createBackup(directory, packlistFile, "packlist.backup")
-
-            val gson = GsonBuilder()
-                .setPrettyPrinting()
-                .disableHtmlEscaping()
-                .create()
-
-            val jsonElement = JsonParser.parseString(content)
-            var updated = false
-
-            val resultContent = when {
-                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
-                    val rootObject = jsonElement.asJsonObject
-                    val packsArray = rootObject.getAsJsonArray("packs")
-
-                    for (i in 0 until packsArray.size()) {
-                        val packObj = packsArray[i].asJsonObject
-                        if (packObj.get("id")?.asString == updatedPack.id) {
-                            packsArray[i] = updatedPack.toJsonObject()
-                            updated = true
-                            break
-                        }
-                    }
-
-                    if (!updated) {
-                        throw IllegalStateException("找不到 id 为 ${updatedPack.id} 的曲包")
-                    }
-
-                    formatWithTwoSpaces(gson.toJson(rootObject))
-                }
-                jsonElement.isJsonArray -> {
-                    val packsArray = jsonElement.asJsonArray
-
-                    for (i in 0 until packsArray.size()) {
-                        val packObj = packsArray[i].asJsonObject
-                        if (packObj.get("id")?.asString == updatedPack.id) {
-                            packsArray[i] = updatedPack.toJsonObject()
-                            updated = true
-                            break
-                        }
-                    }
-
-                    if (!updated) {
-                        throw IllegalStateException("找不到 id 为 ${updatedPack.id} 的曲包")
-                    }
-
-                    formatWithTwoSpaces(gson.toJson(packsArray))
-                }
-                else -> throw IllegalStateException("packlist 格式不正确")
-            }
-
-            writeFileContent(packlistFile.uri, resultContent)
-            Log.d(TAG, "Updated pack: ${updatedPack.id}")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to update pack", e)
-            false
-        }
-    }
-
-    /**
-     * 获取 packlist 文件
-     */
-    private fun getPacklistFile(directoryUri: Uri): DocumentFile? {
-        val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return null
-        return directory.findFile(PACKLIST_FILENAME)
-    }
-
     /**
      * 获取歌曲曲绘的 URI
      * 优先查找缩略图 base_256.jpg / 1080_base_256.jpg，
@@ -313,16 +148,12 @@ class SonglistRepository(private val context: Context) {
             val songlistFile = getSonglistFile(directoryUri)
                 ?: throw IllegalStateException("找不到 songlist 文件")
 
-            val content = readFileContent(songlistFile.uri)
+            val content = FileUtils.readFileContent(context, songlistFile.uri)
                 ?: throw IllegalStateException("无法读取 songlist 文件")
 
-            // 创建备份
-            createBackup(DocumentFile.fromTreeUri(context, directoryUri)!!, songlistFile)
+            FileUtils.createBackup(context, DocumentFile.fromTreeUri(context, directoryUri)!!, songlistFile, BACKUP_FILENAME)
 
-            val gson = GsonBuilder()
-                .setPrettyPrinting()
-                .disableHtmlEscaping()
-                .create()
+            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
 
             val jsonElement = JsonParser.parseString(content)
             var updated = false
@@ -345,7 +176,7 @@ class SonglistRepository(private val context: Context) {
                         throw IllegalStateException("找不到 id 为 ${updatedSong.id} 的歌曲")
                     }
                     
-                    formatWithTwoSpaces(gson.toJson(rootObject))
+                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
                 }
                 jsonElement.isJsonArray -> {
                     val songsArray = jsonElement.asJsonArray
@@ -363,12 +194,12 @@ class SonglistRepository(private val context: Context) {
                         throw IllegalStateException("找不到 id 为 ${updatedSong.id} 的歌曲")
                     }
                     
-                    formatWithTwoSpaces(gson.toJson(songsArray))
+                    FileUtils.formatWithTwoSpaces(gson.toJson(songsArray))
                 }
                 else -> throw IllegalStateException("songlist 格式不正确")
             }
 
-            writeFileContent(songlistFile.uri, resultContent)
+            FileUtils.writeFileContent(context, songlistFile.uri, resultContent)
             Log.d(TAG, "Updated song: ${updatedSong.id}")
             true
         } catch (e: Exception) {
@@ -459,16 +290,12 @@ class SonglistRepository(private val context: Context) {
             val songlistFile = directory.findFile(SONGLIST_FILENAME)
                 ?: throw IllegalStateException("找不到 songlist 文件")
 
-            val content = readFileContent(songlistFile.uri)
+            val content = FileUtils.readFileContent(context, songlistFile.uri)
                 ?: throw IllegalStateException("无法读取 songlist 文件")
 
-            // 创建备份
-            createBackup(directory, songlistFile)
+            FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)
 
-            val gson = GsonBuilder()
-                .setPrettyPrinting()
-                .disableHtmlEscaping()
-                .create()
+            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
 
             val jsonElement = JsonParser.parseString(content)
             var removed = false
@@ -493,7 +320,7 @@ class SonglistRepository(private val context: Context) {
                     }
                     
                     rootObject.add("songs", newSongsArray)
-                    formatWithTwoSpaces(gson.toJson(rootObject))
+                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
                 }
                 jsonElement.isJsonArray -> {
                     val songsArray = jsonElement.asJsonArray
@@ -512,12 +339,12 @@ class SonglistRepository(private val context: Context) {
                         throw IllegalStateException("找不到 id 为 $songId 的歌曲")
                     }
                     
-                    formatWithTwoSpaces(gson.toJson(newSongsArray))
+                    FileUtils.formatWithTwoSpaces(gson.toJson(newSongsArray))
                 }
                 else -> throw IllegalStateException("songlist 格式不正确")
             }
 
-            writeFileContent(songlistFile.uri, resultContent)
+            FileUtils.writeFileContent(context, songlistFile.uri, resultContent)
 
             // 2. 删除歌曲文件夹（使用实际文件夹名 folderId）
             val songFolder = directory.findFile(folderId)
@@ -715,14 +542,12 @@ class SonglistRepository(private val context: Context) {
             val songlistFile = directory.findFile(SONGLIST_FILENAME)
                 ?: throw IllegalStateException("找不到 songlist 文件")
             
-            // 1. 创建备份
-            createBackup(directory, songlistFile)
+            FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)
             
             // 2. 读取原始内容
-            val originalContent = readFileContent(songlistFile.uri)
+            val originalContent = FileUtils.readFileContent(context, songlistFile.uri)
                 ?: throw IllegalStateException("无法读取 songlist 文件")
             
-            // 3. 从 ZIP 提取新歌曲
             val packSonglistContent = entries.find { isSonglistFile(it.name.substringAfterLast("/")) }
                 ?.let { String(it.data, Charsets.UTF_8) }
                 ?: throw IllegalStateException("ZIP 中找不到有效的 songlist 文件")
@@ -743,117 +568,34 @@ class SonglistRepository(private val context: Context) {
                 else -> throw IllegalStateException("ZIP中的songlist格式不正确")
             }
             
-            // 4. 解析并修改客户端 songlist
             val originalJson = JsonParser.parseString(originalContent)
             
-            // 使用 Gson 构建器，自定义缩进为 2 空格
-            val gson = GsonBuilder()
-                .setPrettyPrinting()
-                .disableHtmlEscaping()
-                .create()
+            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
             
-            // 处理并生成结果
             val resultContent = when {
                 originalJson.isJsonObject && originalJson.asJsonObject.has("songs") -> {
                     val rootObject = originalJson.asJsonObject
                     val songsArray = rootObject.getAsJsonArray("songs")
                     songsArray.add(newSongObject)
-                    
-                    // 使用 Gson 格式化，但将 4 空格替换为 2 空格
-                    formatWithTwoSpaces(gson.toJson(rootObject))
+                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
                 }
                 originalJson.isJsonArray -> {
                     val songsArray = originalJson.asJsonArray
                     songsArray.add(newSongObject)
-                    formatWithTwoSpaces(gson.toJson(songsArray))
+                    FileUtils.formatWithTwoSpaces(gson.toJson(songsArray))
                 }
                 else -> {
                     throw IllegalStateException("客户端 songlist 格式不正确")
                 }
             }
             
-            // 5. 写入文件（确保完全替换原内容）
-            writeFileContent(songlistFile.uri, resultContent)
+            FileUtils.writeFileContent(context, songlistFile.uri, resultContent)
             
             Log.d(TAG, "Successfully updated songlist, added song: ${newSongObject.get("id")?.asString}")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update songlist", e)
             false
-        }
-    }
-    
-    /**
-     * 将 Gson 默认的 4 空格缩进转换为 2 空格
-     */
-    private fun formatWithTwoSpaces(json: String): String {
-        val lines = json.lines()
-        val result = StringBuilder()
-        
-        for (line in lines) {
-            // 计算前导空格数
-            var leadingSpaces = 0
-            for (c in line) {
-                if (c == ' ') leadingSpaces++
-                else break
-            }
-            
-            // 将 4 的倍数空格转换为 2 的倍数
-            val indentLevel = leadingSpaces / 4
-            val newIndent = "  ".repeat(indentLevel)
-            val remainder = line.substring(leadingSpaces)
-            
-            result.append(newIndent).append(remainder).append('\n')
-        }
-        
-        return result.toString().trimEnd()
-    }
-    
-    /**
-     * 创建备份文件
-     */
-    private fun createBackup(directory: DocumentFile, originalFile: DocumentFile, backupName: String = BACKUP_FILENAME) {
-        try {
-            directory.findFile(backupName)?.delete()
-            val backupFile = directory.createFile("application/octet-stream", backupName)
-            if (backupFile != null) {
-                context.contentResolver.openInputStream(originalFile.uri)?.use { input ->
-                    context.contentResolver.openOutputStream(backupFile.uri)?.use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                Log.d(TAG, "Created backup: $backupName")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to create backup", e)
-        }
-    }
-    
-    /**
-     * 读取文件内容
-     */
-    private fun readFileContent(uri: Uri): String? {
-        return try {
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
-                    reader.readText()
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read file", e)
-            null
-        }
-    }
-    
-    /**
-     * 写入文件内容 - 使用 Writer 确保完整写入
-     */
-    private fun writeFileContent(uri: Uri, content: String) {
-        context.contentResolver.openOutputStream(uri, "wt")?.use { outputStream ->
-            OutputStreamWriter(outputStream, Charsets.UTF_8).use { writer ->
-                writer.write(content)
-                writer.flush()
-            }
         }
     }
     
