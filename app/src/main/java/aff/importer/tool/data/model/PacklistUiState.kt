@@ -9,9 +9,11 @@ data class PacklistUiState(
     val allPacks: List<Pack> = emptyList(),
     val searchQuery: String = "",
     val error: String? = null,
-    // 选中编辑的曲包
     val selectedPack: Pack? = null,
-    // 保存状态
     val isSaving: Boolean = false,
-    val saveSuccess: Boolean = false
+    val saveSuccess: Boolean = false,
+    val showDeleteConfirm: Boolean = false,
+    val packToDelete: Pack? = null,
+    val deleteSuccess: Boolean = false,
+    val deletedPackName: String? = null
 )

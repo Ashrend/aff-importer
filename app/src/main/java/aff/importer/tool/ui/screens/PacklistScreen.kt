@@ -23,7 +23,10 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,6 +39,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -47,6 +51,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -72,8 +77,9 @@ fun PacklistScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val context = LocalContext.current
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val lazyGridState = rememberLazyGridState()
+    val context = LocalContext.current
 
     // 加载曲包列表
     LaunchedEffect(directoryUri) {
@@ -133,10 +139,21 @@ fun PacklistScreen(
         }
     }
 
+    // 显示删除成功提示
+    LaunchedEffect(uiState.deleteSuccess) {
+        if (uiState.deleteSuccess) {
+            val message = uiState.deletedPackName?.let { "已删除: $it" } ?: "删除完成"
+            snackbarHostState.showSnackbar(message)
+            viewModel.clearDeleteSuccess()
+        }
+    }
+
     Scaffold(
+        modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
                 title = { Text("曲包管理") },
+                scrollBehavior = scrollBehavior,
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -205,7 +222,8 @@ fun PacklistScreen(
                             PackCard(
                                 pack = pack,
                                 bannerUri = viewModel.getBannerUri(pack),
-                                onClick = { viewModel.selectPack(pack) }
+                                onClick = { viewModel.selectPack(pack) },
+                                onDelete = { viewModel.showDeleteConfirm(pack) }
                             )
                         }
                     }
@@ -226,6 +244,15 @@ fun PacklistScreen(
                 onClearSuccess = viewModel::clearSaveSuccess
             )
         }
+
+        // 删除确认对话框
+        if (uiState.showDeleteConfirm) {
+            DeleteConfirmDialog(
+                pack = uiState.packToDelete,
+                onConfirm = { viewModel.confirmDelete() },
+                onDismiss = { viewModel.dismissDeleteConfirm() }
+            )
+        }
     }
 }
 
@@ -237,6 +264,7 @@ private fun PackCard(
     pack: Pack,
     bannerUri: Uri?,
     onClick: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -269,6 +297,22 @@ private fun PackCard(
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
+                    )
+                }
+
+                // 删除按钮
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -361,6 +405,41 @@ private fun SearchBar(
 /**
  * 空状态提示
  */
+/**
+ * 删除确认对话框
+ */
+@Composable
+private fun DeleteConfirmDialog(
+    pack: Pack?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (pack == null) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("确认删除") },
+        text = {
+            Text("确定要删除曲包 \"${pack.getDisplayName()}\" (${pack.id}) 吗？\n\n这将从 packlist 中移除该曲包的元数据。此操作不可撤销。")
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
 @Composable
 private fun EmptyState(
     message: String,

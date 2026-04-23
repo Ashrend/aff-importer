@@ -5,7 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import aff.importer.tool.data.SonglistRepository
+import aff.importer.tool.data.PacklistRepository
 import aff.importer.tool.data.model.Pack
 import aff.importer.tool.data.model.PacklistUiState
 import kotlinx.coroutines.CancellationException
@@ -33,7 +33,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
         private const val MAX_CONCURRENT_LOADS = 4
     }
 
-    private val songlistRepository = SonglistRepository(application)
+    private val packlistRepository = PacklistRepository(application)
 
     private val _uiState = MutableStateFlow(PacklistUiState())
     val uiState: StateFlow<PacklistUiState> = _uiState.asStateFlow()
@@ -78,7 +78,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
 
         currentListLoadJob = viewModelScope.launch {
             try {
-                val packs = songlistRepository.getAllPacks(directoryUri)
+                val packs = packlistRepository.getAllPacks(directoryUri)
 
                 _uiState.update {
                     it.copy(
@@ -146,7 +146,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
 
             val job = viewModelScope.launch(loadDispatcher) {
                 try {
-                    val uri = songlistRepository.getPackBannerUri(directoryUri, pack.id)
+                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id)
                     bannerUris[pack.id] = uri
 
                     withContext(Dispatchers.Main) {
@@ -177,7 +177,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                 try {
                     if (!isActive) return@launch
 
-                    val uri = songlistRepository.getPackBannerUri(directoryUri, pack.id)
+                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id)
                     bannerUris[pack.id] = uri
 
                     withContext(Dispatchers.Main) {
@@ -211,7 +211,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 try {
-                    val uri = songlistRepository.getPackBannerUri(directoryUri, pack.id)
+                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id)
                     bannerUris[pack.id] = uri
 
                     if (bannerUris.size % 10 == 0) {
@@ -268,7 +268,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(isSaving = true) }
 
         viewModelScope.launch {
-            val success = songlistRepository.updatePack(directoryUri, updatedPack)
+            val success = packlistRepository.updatePack(directoryUri, updatedPack)
 
             if (success) {
                 _uiState.update { state ->
@@ -311,10 +311,80 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
+     * 显示删除确认对话框
+     */
+    fun showDeleteConfirm(pack: Pack) {
+        _uiState.update {
+            it.copy(showDeleteConfirm = true, packToDelete = pack)
+        }
+    }
+
+    /**
+     * 取消删除
+     */
+    fun dismissDeleteConfirm() {
+        _uiState.update {
+            it.copy(showDeleteConfirm = false, packToDelete = null)
+        }
+    }
+
+    /**
+     * 确认删除
+     */
+    fun confirmDelete() {
+        val packToDelete = _uiState.value.packToDelete ?: return
+        val directoryUri = currentDirectoryUri ?: return
+
+        _uiState.update { it.copy(showDeleteConfirm = false) }
+
+        viewModelScope.launch {
+            val success = packlistRepository.deletePack(directoryUri, packToDelete.id)
+
+            if (success) {
+                bannerUris.remove(packToDelete.id)
+
+                _uiState.update { state ->
+                    val updatedAllPacks = state.allPacks.filter { it.id != packToDelete.id }
+                    val updatedPacks = if (state.searchQuery.isBlank()) {
+                        updatedAllPacks
+                    } else {
+                        updatedAllPacks.filter { pack ->
+                            pack.id.contains(state.searchQuery, ignoreCase = true) ||
+                            pack.getDisplayName().contains(state.searchQuery, ignoreCase = true)
+                        }
+                    }
+
+                    state.copy(
+                        allPacks = updatedAllPacks,
+                        packs = updatedPacks,
+                        packToDelete = null,
+                        deleteSuccess = true,
+                        deletedPackName = packToDelete.getDisplayName()
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(
+                        error = "删除失败: ${packToDelete.id}",
+                        packToDelete = null
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * 清除保存成功状态
      */
     fun clearSaveSuccess() {
         _uiState.update { it.copy(saveSuccess = false) }
+    }
+
+    /**
+     * 清除删除成功状态
+     */
+    fun clearDeleteSuccess() {
+        _uiState.update { it.copy(deleteSuccess = false, deletedPackName = null) }
     }
 
     /**
