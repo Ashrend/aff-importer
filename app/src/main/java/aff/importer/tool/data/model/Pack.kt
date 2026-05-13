@@ -12,9 +12,12 @@ data class Pack(
     val descriptionLocalized: LocalizedText = LocalizedText(),
     val packParent: String = "",
     val isExtendPack: Boolean = false,
+    val isActiveExtendPack: Boolean = false,
     val customBanner: Boolean = false,
     val plusCharacter: Int = 0,
-    val section: String = ""
+    val section: String = "",
+    val smallPackImage: Boolean = false,
+    val cutoutPackImage: Boolean = false
 ) {
     companion object {
         /**
@@ -28,9 +31,12 @@ data class Pack(
                 descriptionLocalized = parseLocalizedText(json.getAsJsonObject("description_localized")),
                 packParent = json.get("pack_parent")?.asString ?: "",
                 isExtendPack = json.get("is_extend_pack")?.asBoolean ?: false,
+                isActiveExtendPack = json.get("is_active_extend_pack")?.asBoolean ?: false,
                 customBanner = json.get("custom_banner")?.asBoolean ?: false,
                 plusCharacter = json.get("plus_character")?.asInt ?: 0,
-                section = json.get("section")?.asString ?: ""
+                section = json.get("section")?.asString ?: "",
+                smallPackImage = json.get("small_pack_image")?.asBoolean ?: false,
+                cutoutPackImage = json.get("cutout_pack_image")?.asBoolean ?: false
             )
         }
 
@@ -57,9 +63,12 @@ data class Pack(
             if (!descriptionLocalized.isEmpty()) add("description_localized", descriptionLocalized.toJsonObject())
             if (packParent.isNotEmpty()) addProperty("pack_parent", packParent)
             if (isExtendPack) addProperty("is_extend_pack", true)
+            if (isActiveExtendPack) addProperty("is_active_extend_pack", true)
             if (customBanner) addProperty("custom_banner", true)
             if (plusCharacter > 0) addProperty("plus_character", plusCharacter)
             if (section.isNotEmpty()) addProperty("section", section)
+            if (smallPackImage) addProperty("small_pack_image", true)
+            if (cutoutPackImage) addProperty("cutout_pack_image", true)
         }
     }
 

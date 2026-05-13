@@ -48,7 +48,8 @@ fun PackDetailBottomSheet(
     onSave: (Pack) -> Unit,
     isSaving: Boolean,
     saveSuccess: Boolean,
-    onClearSuccess: () -> Unit
+    onClearSuccess: () -> Unit,
+    isNew: Boolean = false
 ) {
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true,
@@ -79,7 +80,8 @@ fun PackDetailBottomSheet(
             onDismiss = onDismiss,
             onSave = onSave,
             isSaving = isSaving,
-            scrollState = scrollState
+            scrollState = scrollState,
+            isNew = isNew
         )
     }
 }
@@ -90,7 +92,8 @@ private fun PackDetailContent(
     onDismiss: () -> Unit,
     onSave: (Pack) -> Unit,
     isSaving: Boolean,
-    scrollState: androidx.compose.foundation.ScrollState
+    scrollState: androidx.compose.foundation.ScrollState,
+    isNew: Boolean = false
 ) {
     var id by remember { mutableStateOf(pack.id) }
     var type by remember { mutableStateOf(pack.type) }
@@ -109,9 +112,12 @@ private fun PackDetailContent(
 
     var packParent by remember { mutableStateOf(pack.packParent) }
     var isExtendPack by remember { mutableStateOf(pack.isExtendPack) }
+    var isActiveExtendPack by remember { mutableStateOf(pack.isActiveExtendPack) }
     var customBanner by remember { mutableStateOf(pack.customBanner) }
     var plusCharacter by remember { mutableStateOf(pack.plusCharacter.toString()) }
     var section by remember { mutableStateOf(pack.section) }
+    var smallPackImage by remember { mutableStateOf(pack.smallPackImage) }
+    var cutoutPackImage by remember { mutableStateOf(pack.cutoutPackImage) }
 
     Column(
         modifier = Modifier
@@ -123,22 +129,23 @@ private fun PackDetailContent(
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "编辑曲包信息",
-            style = MaterialTheme.typography.headlineSmall
-        )
+            Text(
+                text = if (isNew) "新建曲包" else "编辑曲包信息",
+                style = MaterialTheme.typography.headlineSmall
+            )
 
-        HorizontalDivider()
+            HorizontalDivider()
 
-        SectionTitle("基本信息")
-        OutlinedTextField(
-            value = id,
-            onValueChange = { id = it },
-            label = { Text("ID (只读)") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = false,
-            singleLine = true
-        )
+            SectionTitle("基本信息")
+            OutlinedTextField(
+                value = id,
+                onValueChange = { id = it },
+                label = { Text("ID") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = isNew,
+                singleLine = true,
+                supportingText = if (!isNew) ({ Text("只读") }) else null
+            )
 
         OutlinedTextField(
             value = type,
@@ -288,6 +295,44 @@ private fun PackDetailContent(
             }
         }
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { isActiveExtendPack = !isActiveExtendPack }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = isActiveExtendPack,
+                    onCheckedChange = { isActiveExtendPack = it }
+                )
+                Text("活跃扩展曲包")
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { smallPackImage = !smallPackImage }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = smallPackImage,
+                    onCheckedChange = { smallPackImage = it }
+                )
+                Text("小图片样式")
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { cutoutPackImage = !cutoutPackImage }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = cutoutPackImage,
+                    onCheckedChange = { cutoutPackImage = it }
+                )
+                Text("裁剪图片")
+            }
+        }
+
         Spacer(modifier = Modifier.height(8.dp))
 
         Row(
@@ -323,9 +368,12 @@ private fun PackDetailContent(
                         ),
                         packParent = packParent,
                         isExtendPack = isExtendPack,
+                        isActiveExtendPack = isActiveExtendPack,
                         customBanner = customBanner,
                         plusCharacter = plusCharacter.toIntOrNull() ?: pack.plusCharacter,
-                        section = section
+                        section = section,
+                        smallPackImage = smallPackImage,
+                        cutoutPackImage = cutoutPackImage
                     )
                     onSave(updatedPack)
                 },

@@ -98,6 +98,11 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 hasLoaded = true
+
+                // 预加载所有曲绘 URI（批量扫描，相册级体验）
+                if (songs.isNotEmpty()) {
+                    preloadAllJacketUris(directoryUri, songs)
+                }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -114,6 +119,26 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
      */
     fun getJacketUri(song: Song): Uri? {
         return jacketUris[song.getActualFolderId()]
+    }
+
+    /**
+     * 批量预加载所有曲绘 URI（取代按需懒加载）
+     * 一次性扫描所有歌曲文件夹，通过单次 listFiles 替代多次 findFile，
+     * 大幅提升滚动时的曲绘显示速度。
+     */
+    private fun preloadAllJacketUris(directoryUri: Uri, songs: List<Song>) {
+        viewModelScope.launch(loadDispatcher) {
+            try {
+                val folderIds = songs.map { it.getActualFolderId() }
+                val uris = songlistRepository.getAllJacketUris(directoryUri, folderIds)
+                jacketUris.putAll(uris)
+                withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy() }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to preload all jacket URIs", e)
+            }
+        }
     }
 
     /**
@@ -309,6 +334,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
 
         val songMap = allSongs.associateBy { it.id }
 
+        // 所有曲绘已缓存时跳过，批量预加载后此处通常直接返回
+        if (allSongs.all { jacketUris.containsKey(it.getActualFolderId()) }) return
+
         // 1. 取消不在可见或预加载范围内的任务
         val keepIds = (visibleItemIds + preloadItemIds).toSet()
         activeLoads.keys.toList().forEach { id ->
@@ -385,6 +413,8 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
         val directoryUri = currentDirectoryUri ?: return
         val allSongs = _uiState.value.songs
 
+        // 所有曲绘已缓存时跳过
+        if (allSongs.all { jacketUris.containsKey(it.getActualFolderId()) }) return
         if (backgroundLoadJob?.isActive == true) return
 
         backgroundLoadJob = viewModelScope.launch(loadDispatcher) {
