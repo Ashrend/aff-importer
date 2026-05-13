@@ -10,8 +10,11 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
@@ -138,6 +141,63 @@ class SonglistRepository(private val context: Context) {
             Log.e(TAG, "Failed to get jacket for $folderId", e)
             null
         }
+    }
+
+    /**
+     * 批量获取所有歌曲的曲绘 URI（优化版）
+     * 一次性扫描根目录找出所有歌曲文件夹，再并行扫描每个文件夹内的文件，
+     * 通过一次 listFiles 替代多次 findFile，大幅提升加载速度。
+     *
+     * @param folderIds 所有需要查找曲绘的文件夹 ID 列表
+     * @return folderId -> jacketUri 的映射表（无曲绘的文件夹不会出现在结果中）
+     */
+    suspend fun getAllJacketUris(directoryUri: Uri, folderIds: List<String>): Map<String, Uri?> = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext emptyMap()
+            val folderIdSet = folderIds.toSet()
+
+            val rootChildren = directory.listFiles()
+            val folderMap = rootChildren
+                .filter { it.isDirectory && it.name in folderIdSet }
+                .associateBy { it.name }
+
+            if (folderMap.isEmpty()) return@withContext emptyMap()
+
+            val result = ConcurrentHashMap<String, Uri?>(folderMap.size)
+
+            coroutineScope {
+                folderMap.values.map { folder ->
+                    async {
+                        val folderName = folder.name ?: return@async
+                        try {
+                            val files = folder.listFiles()
+                            val jacketUri = findJacketUri(files)
+                            if (jacketUri != null) {
+                                result[folderName] = jacketUri
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to list files in $folderName", e)
+                        }
+                    }
+                }
+            }
+
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to batch load jacket URIs", e)
+            emptyMap()
+        }
+    }
+
+    /**
+     * 从文件夹文件列表中查找曲绘文件
+     */
+    private fun findJacketUri(files: Array<DocumentFile>): Uri? {
+        val fileMap = files.filter { it.isFile }.associateBy { it.name }
+        return fileMap["base_256.jpg"]?.uri
+            ?: fileMap["1080_base_256.jpg"]?.uri
+            ?: fileMap["base.jpg"]?.uri
+            ?: fileMap["1080_base.jpg"]?.uri
     }
 
     /**

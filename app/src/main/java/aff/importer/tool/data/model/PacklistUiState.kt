@@ -15,5 +15,6 @@ data class PacklistUiState(
     val showDeleteConfirm: Boolean = false,
     val packToDelete: Pack? = null,
     val deleteSuccess: Boolean = false,
-    val deletedPackName: String? = null
+    val deletedPackName: String? = null,
+    val showCreateDialog: Boolean = false
 )
