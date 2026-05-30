@@ -1,4 +1,4 @@
-![我的自定义图标](aff_importer_icon_256.png)
+![我的自定义图标](icon/aff_importer_icon_256.png)
 # Arcaea资产管理工具
 
 适用于Android平台的Arcaea资产管理工具。
