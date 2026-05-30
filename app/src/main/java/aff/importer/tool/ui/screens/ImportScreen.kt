@@ -187,7 +187,7 @@ fun ImportScreen(
             if (logs.isNotEmpty()) {
                 LogDisplay(
                     logs = logs,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
             

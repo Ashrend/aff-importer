@@ -24,6 +24,32 @@
     <string name="error_io">文件操作失败</string>
     <string name="error_unknown">未知错误</string>
     
+    <!-- Songlist Screen -->
+    <string name="songlist_title">曲目管理</string>
+    <string name="songlist_search_hint">搜索曲目 ID、标题或艺术家</string>
+    <string name="songlist_empty">没有找到任何曲目</string>
+    <string name="songlist_empty_search">没有找到匹配的曲目</string>
+    <string name="songlist_delete_confirm">确定要删除曲目 \"%1$s\" (%2$s) 吗？\n\n这将从 songlist 中移除该曲目的元数据，并删除整个乐曲文件夹。此操作不可撤销。</string>
+    <string name="songlist_deleted">已删除: %1$s</string>
+    <string name="songlist_saved">保存完成</string>
+    <string name="songlist_unknown_artist">未知</string>
+    
+    <!-- Packlist Screen -->
+    <string name="packlist_title">曲包管理</string>
+    <string name="packlist_search_hint">搜索曲包 ID 或名称</string>
+    <string name="packlist_empty">没有找到任何曲包</string>
+    <string name="packlist_empty_search">没有找到匹配的曲包</string>
+    <string name="packlist_delete_confirm">确定要删除曲包 \"%1$s\" (%2$s) 吗？\n\n这将从 packlist 中移除该曲包的元数据。此操作不可撤销。</string>
+    <string name="packlist_deleted">已删除: %1$s</string>
+    <string name="packlist_saved">保存完成</string>
+    
+    <!-- Common -->
+    <string name="confirm_delete_title">确认删除</string>
+    <string name="action_delete">删除</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_save">保存</string>
+    <string name="clear">清除</string>
+    
     <!-- Actions -->
     <string name="action_retry">重试</string>
     <string name="action_select_again">重新选择</string>

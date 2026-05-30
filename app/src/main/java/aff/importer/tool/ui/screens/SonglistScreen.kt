@@ -1,5 +1,6 @@
 package aff.importer.tool.ui.screens
 
+import aff.importer.tool.R
 import aff.importer.tool.SonglistViewModel
 import aff.importer.tool.data.model.Song
 import android.net.Uri
@@ -53,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -147,8 +149,8 @@ fun SonglistScreen(
     // 显示删除成功提示
     LaunchedEffect(uiState.deleteSuccess) {
         if (uiState.deleteSuccess) {
-            val message = uiState.deletedSongName?.let { 
-                "已删除: $it" 
+            val message = uiState.deletedSongName?.let {
+                context.getString(R.string.songlist_deleted, it)
             } ?: "删除完成"
             snackbarHostState.showSnackbar(message)
             viewModel.clearDeleteSuccess()
@@ -158,7 +160,7 @@ fun SonglistScreen(
     // 显示保存成功提示
     LaunchedEffect(uiState.saveSuccess) {
         if (uiState.saveSuccess) {
-            snackbarHostState.showSnackbar("保存完成")
+            snackbarHostState.showSnackbar(context.getString(R.string.songlist_saved))
             viewModel.clearSaveSuccess()
         }
     }
@@ -167,7 +169,7 @@ fun SonglistScreen(
         modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text("曲目管理") },
+                title = { Text(stringResource(R.string.songlist_title)) },
                 scrollBehavior = scrollBehavior,
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -204,9 +206,9 @@ fun SonglistScreen(
                 uiState.songs.isEmpty() && !uiState.isLoading -> {
                     EmptyState(
                         message = if (uiState.searchQuery.isNotEmpty()) {
-                            "没有找到匹配的曲目"
+                            stringResource(R.string.songlist_empty_search)
                         } else {
-                            uiState.error ?: "没有找到任何曲目"
+                            uiState.error ?: stringResource(R.string.songlist_empty)
                         },
                         modifier = Modifier.fillMaxSize()
                     )
@@ -278,12 +280,12 @@ private fun SearchBar(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier,
-        placeholder = { Text("搜索曲目 ID、标题或艺术家") },
+        placeholder = { Text(stringResource(R.string.songlist_search_hint)) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = {
             if (query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "清除")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.clear))
                 }
             }
         },
@@ -404,7 +406,7 @@ private fun SongCardSimple(
                 )
                 
                 Text(
-                    text = song.getDisplayArtist().ifBlank { "未知" },
+                    text = song.getDisplayArtist().ifBlank { context.getString(R.string.songlist_unknown_artist) },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -527,9 +529,9 @@ private fun DeleteConfirmDialog(
     
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("确认删除") },
+        title = { Text(stringResource(R.string.confirm_delete_title)) },
         text = {
-            Text("确定要删除曲目 \"${song.getDisplayTitle()}\" (${song.id}) 吗？\n\n这将从 songlist 中移除该曲目的元数据，并删除整个乐曲文件夹。此操作不可撤销。")
+            Text(stringResource(R.string.songlist_delete_confirm, song.getDisplayTitle(), song.id))
         },
         confirmButton = {
             Button(
@@ -538,12 +540,12 @@ private fun DeleteConfirmDialog(
                     containerColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Text("删除")
+                Text(stringResource(R.string.action_delete))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(stringResource(R.string.action_cancel))
             }
         }
     )

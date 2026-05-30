@@ -2,6 +2,7 @@ package aff.importer.tool.data
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -33,19 +34,20 @@ internal object FileUtils {
         }
     }
 
-    fun createBackup(context: Context, directory: DocumentFile, originalFile: DocumentFile, backupName: String) {
-        try {
+    fun createBackup(context: Context, directory: DocumentFile, originalFile: DocumentFile, backupName: String): Boolean {
+        return try {
             directory.findFile(backupName)?.delete()
             val backupFile = directory.createFile("application/octet-stream", backupName)
-            if (backupFile != null) {
-                context.contentResolver.openInputStream(originalFile.uri)?.use { input ->
-                    context.contentResolver.openOutputStream(backupFile.uri)?.use { output ->
-                        input.copyTo(output)
-                    }
+                ?: throw IllegalStateException("无法创建备份文件")
+            context.contentResolver.openInputStream(originalFile.uri)?.use { input ->
+                context.contentResolver.openOutputStream(backupFile.uri)?.use { output ->
+                    input.copyTo(output)
                 }
-            }
+            } ?: throw IllegalStateException("无法读取原始文件")
+            true
         } catch (e: Exception) {
-            // ignore
+            Log.e("FileUtils", "创建备份失败: ${e.message}", e)
+            false
         }
     }
 
