@@ -1,16 +1,20 @@
 package aff.importer.tool.data
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import aff.importer.tool.data.model.LogEntry
+import aff.importer.tool.data.model.LogLevel
 import aff.importer.tool.data.model.Pack
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Packlist 仓库，处理 packlist 读取与 JSON 更新
@@ -20,7 +24,13 @@ class PacklistRepository(private val context: Context) {
     companion object {
         private const val TAG = "PacklistRepository"
         private const val PACKLIST_FILENAME = "packlist"
-        private const val BACKUP_FILENAME = "packlist.backup"
+
+        val appLog: SharedFlow<LogEntry> get() = _appLog
+        private val _appLog = MutableSharedFlow<LogEntry>(extraBufferCapacity = 64)
+
+        fun emitLog(message: String, level: LogLevel = LogLevel.INFO) {
+            _appLog.tryEmit(LogEntry(message = message, level = level))
+        }
     }
 
     fun hasPacklistFile(directoryUri: Uri): Boolean {
@@ -43,22 +53,14 @@ class PacklistRepository(private val context: Context) {
         val packs = mutableListOf<Pack>()
         try {
             val jsonElement = JsonParser.parseString(content)
-            when {
-                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
-                    val packsArray = jsonElement.asJsonObject.getAsJsonArray("packs")
-                    packsArray.forEach { element ->
-                        if (element.isJsonObject) {
-                            packs.add(Pack.fromJsonObject(element.asJsonObject))
-                        }
-                    }
-                }
-                jsonElement.isJsonArray -> {
-                    jsonElement.asJsonArray.forEach { element ->
-                        if (element.isJsonObject) {
-                            packs.add(Pack.fromJsonObject(element.asJsonObject))
-                        }
-                    }
-                }
+            val packsArray = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") ->
+                    jsonElement.asJsonObject.getAsJsonArray("packs")
+                jsonElement.isJsonArray -> jsonElement.asJsonArray
+                else -> null
+            }
+            packsArray?.forEach { element ->
+                if (element.isJsonObject) packs.add(Pack.fromJsonObject(element.asJsonObject))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse packs", e)
@@ -66,105 +68,49 @@ class PacklistRepository(private val context: Context) {
         return packs
     }
 
-    private fun findPackFolder(directory: DocumentFile): DocumentFile? {
-        return directory.listFiles().firstOrNull { it.isDirectory && it.name == "pack" }
-    }
-
-    private fun findBannerNames(packId: String): List<String> {
-        return listOf(
-            "1080_select_$packId.png",
-            "1080_slect_$packId.png",
-            "select_$packId.png"
-        )
-    }
-
-    private fun findBannerFile(packFolder: DocumentFile, subDir: DocumentFile?, packId: String): Uri? {
-        val names = findBannerNames(packId)
-        for (name in names) {
-            packFolder.findFile(name)?.let { return it.uri }
-        }
-        subDir?.let { dir ->
-            for (name in names) {
-                dir.findFile(name)?.let { return it.uri }
-            }
-        }
-        return null
-    }
-
-    /**
-     * 批量获取所有曲包的横幅 URI（优化版）
-     * 一次性扫描 pack/ 和 pack/1080/ 目录，通过单次 listFiles 替代多次 findFile。
-     *
-     * @param packIds 所有需要查找横幅的曲包 ID 列表
-     * @return packId -> bannerUri 的映射表
-     */
-    suspend fun getAllPackBannerUris(directoryUri: Uri, packIds: List<String>): Map<String, Uri?> = withContext(Dispatchers.IO) {
-        try {
-            val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext emptyMap()
-
-            val allFiles = directory.listFiles()
-            val packFolder = allFiles.firstOrNull { it.isDirectory && it.name == "pack" }
-
-            val rootFileMap = allFiles.filter { it.isFile && it.name != null }.associateBy { it.name!! }
-
-            val packFileMap: Map<String, DocumentFile>
-            val subDirFileMap: Map<String, DocumentFile>
-
-            if (packFolder != null) {
-                val packFiles = packFolder.listFiles()
-                packFileMap = packFiles.filter { it.isFile && it.name != null }.associateBy { it.name!! }
-                subDirFileMap = packFiles.firstOrNull { it.isDirectory && it.name == "1080" }
-                    ?.let { dir ->
-                        dir.listFiles().filter { it.isFile && it.name != null }.associateBy { it.name!! }
-                    }
-                    ?: emptyMap()
-            } else {
-                packFileMap = emptyMap()
-                subDirFileMap = emptyMap()
-            }
-
-            val result = ConcurrentHashMap<String, Uri?>(packIds.size)
-            for (packId in packIds) {
-                val names = findBannerNames(packId)
-                var found: Uri? = null
-                for (name in names) {
-                    found = packFileMap[name]?.uri
-                        ?: subDirFileMap[name]?.uri
-                        ?: rootFileMap[name]?.uri
-                    if (found != null) break
-                }
-                if (found != null) {
-                    result[packId] = found
-                }
-            }
-            result
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to batch load pack banner URIs", e)
-            emptyMap()
-        }
-    }
-
-    suspend fun getPackBannerUri(directoryUri: Uri, packId: String): Uri? = withContext(Dispatchers.IO) {
+    suspend fun getPackBannerUri(directoryUri: Uri, packId: String, packType: String = ""): Uri? = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
-            val packFolder = findPackFolder(directory)
-            val subDir = packFolder?.let { folder ->
-                folder.listFiles().firstOrNull { it.isDirectory && it.name == "1080" }
-            }
-            val names = findBannerNames(packId)
+            val packFolder = directory.findFile("pack") ?: return@withContext null
 
-            // 先查 pack/ 再查 pack/1080/ 最后查根目录
-            for (name in names) {
-                packFolder?.findFile(name)?.let { return@withContext it.uri }
-            }
-            subDir?.let { dir ->
-                for (name in names) {
-                    dir.findFile(name)?.let { return@withContext it.uri }
+            // append 类型曲包：封面在 pack/1080/divider_[ID].png
+            if (packType == "append") {
+                val dividerFolder = packFolder.findFile("1080")
+                if (dividerFolder != null) {
+                    val candidates = listOf(
+                        "divider_$packId.png",
+                        "divider_$packId.jpg",
+                        "divider_$packId.jpeg"
+                    )
+                    for (name in candidates) {
+                        val file = dividerFolder.findFile(name)
+                        if (file != null) {
+                            isValidImage(file.uri, file.name, "1080/$packId")
+                            return@withContext file.uri
+                        }
+                    }
+                    // append 类型不参与同名 fallback，防止误配
+                    return@withContext null
                 }
             }
-            for (name in names) {
-                directory.findFile(name)?.let { return@withContext it.uri }
+
+            // 标准曲包：pack/select_[ID].png / pack/1080_select_[ID].png
+            val candidates = listOf(
+                "1080_select_$packId.png",
+                "select_$packId.png",
+                "1080_select_$packId.jpg",
+                "select_$packId.jpg",
+                "1080_select_$packId.jpeg",
+                "select_$packId.jpeg"
+            )
+            for (name in candidates) {
+                val file = packFolder.findFile(name)
+                if (file != null) {
+                    isValidImage(file.uri, file.name, packId)
+                    return@withContext file.uri
+                }
             }
+
             null
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get banner for $packId", e)
@@ -172,15 +118,48 @@ class PacklistRepository(private val context: Context) {
         }
     }
 
+    private fun isValidImage(uri: Uri, fileName: String? = null, parentFolder: String? = null): Boolean {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val opts = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                BitmapFactory.decodeStream(input, null, opts)
+                val valid = opts.outWidth > 0 && opts.outHeight > 0
+                if (valid && fileName != null) {
+                    val ext = fileName.substringAfterLast(".", "").lowercase()
+                    val actualMime = opts.outMimeType ?: ""
+                    val expectedMime = when (ext) {
+                        "jpg", "jpeg" -> "image/jpeg"
+                        "png" -> "image/png"
+                        else -> ""
+                    }
+                    if (expectedMime.isNotEmpty() && actualMime != expectedMime) {
+                        val filePath = if (parentFolder != null) "$parentFolder/$fileName" else fileName
+                        val msg = "扩展名与实际格式不符: $filePath (声明=$ext, 实际=$actualMime)"
+                        Log.w(TAG, msg)
+                        emitLog(msg, LogLevel.WARNING)
+                    }
+                }
+                valid
+            } ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     suspend fun updatePack(directoryUri: Uri, updatedPack: Pack): Boolean = withContext(Dispatchers.IO) {
         try {
             val packlistFile = getPacklistFile(directoryUri)
                 ?: throw IllegalStateException("找不到 packlist 文件")
-
             val content = FileUtils.readFileContent(context, packlistFile.uri)
                 ?: throw IllegalStateException("无法读取 packlist 文件")
 
-            FileUtils.createBackup(context, DocumentFile.fromTreeUri(context, directoryUri)!!, packlistFile, BACKUP_FILENAME)
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+            if (!FileUtils.createBackup(context, directory, packlistFile, "packlist.backup")) {
+                Log.w(TAG, "创建 packlist 备份失败，继续执行")
+            }
 
             val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
             val jsonElement = JsonParser.parseString(content)
@@ -224,45 +203,6 @@ class PacklistRepository(private val context: Context) {
         }
     }
 
-    suspend fun addPack(directoryUri: Uri, newPack: Pack): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val directory = DocumentFile.fromTreeUri(context, directoryUri)
-                ?: throw IllegalStateException("无法访问目录")
-            val packlistFile = directory.findFile(PACKLIST_FILENAME)
-                ?: throw IllegalStateException("找不到 packlist 文件")
-            val content = FileUtils.readFileContent(context, packlistFile.uri)
-                ?: throw IllegalStateException("无法读取 packlist 文件")
-
-            FileUtils.createBackup(context, directory, packlistFile, BACKUP_FILENAME)
-
-            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
-            val jsonElement = JsonParser.parseString(content)
-            val newPackObject = newPack.toJsonObject()
-
-            val resultContent = when {
-                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
-                    val rootObject = jsonElement.asJsonObject
-                    val packsArray = rootObject.getAsJsonArray("packs")
-                    packsArray.add(newPackObject)
-                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
-                }
-                jsonElement.isJsonArray -> {
-                    val packsArray = jsonElement.asJsonArray
-                    packsArray.add(newPackObject)
-                    FileUtils.formatWithTwoSpaces(gson.toJson(packsArray))
-                }
-                else -> throw IllegalStateException("packlist 格式不正确")
-            }
-
-            FileUtils.writeFileContent(context, packlistFile.uri, resultContent)
-            Log.d(TAG, "Added pack: ${newPack.id}")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to add pack", e)
-            false
-        }
-    }
-
     suspend fun deletePack(directoryUri: Uri, packId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri)
@@ -272,7 +212,9 @@ class PacklistRepository(private val context: Context) {
             val content = FileUtils.readFileContent(context, packlistFile.uri)
                 ?: throw IllegalStateException("无法读取 packlist 文件")
 
-            FileUtils.createBackup(context, directory, packlistFile, BACKUP_FILENAME)
+            if (!FileUtils.createBackup(context, directory, packlistFile, "packlist.backup")) {
+                Log.w(TAG, "创建 packlist 备份失败，继续执行")
+            }
 
             val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
             val jsonElement = JsonParser.parseString(content)

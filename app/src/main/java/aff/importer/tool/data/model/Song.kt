@@ -1,5 +1,6 @@
- package aff.importer.tool.data.model
+package aff.importer.tool.data.model
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 
 /**
@@ -293,7 +294,7 @@ data class Song(
 
             // difficulties
             if (difficulties.isNotEmpty()) {
-                val diffArray = com.google.gson.JsonArray()
+                val diffArray = JsonArray()
                 difficulties.forEach { diff ->
                     diffArray.add(diff.toJsonObject())
                 }

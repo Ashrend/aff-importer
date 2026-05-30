@@ -1,22 +1,26 @@
 package aff.importer.tool.data
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import aff.importer.tool.data.model.LogEntry
+import aff.importer.tool.data.model.LogLevel
 import aff.importer.tool.data.model.Song
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+
+typealias ProgressCallback = (completed: Int, total: Int, currentFile: String) -> Unit
 
 /**
  * 导入结果
@@ -47,6 +51,13 @@ class SonglistRepository(private val context: Context) {
         private const val TAG = "SonglistRepository"
         private const val SONGLIST_FILENAME = "songlist"
         private const val BACKUP_FILENAME = "songlist.backup"
+
+        val appLog: SharedFlow<LogEntry> get() = _appLog
+        private val _appLog = MutableSharedFlow<LogEntry>(extraBufferCapacity = 64)
+
+        fun emitLog(message: String, level: LogLevel = LogLevel.INFO) {
+            _appLog.tryEmit(LogEntry(message = message, level = level))
+        }
     }
     
     /**
@@ -128,15 +139,30 @@ class SonglistRepository(private val context: Context) {
             val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
             val songFolder = directory.findFile(folderId) ?: return@withContext null
 
-            // 优先查找 256 缩略图
-            songFolder.findFile("base_256.jpg")?.let { return@withContext it.uri }
-            songFolder.findFile("1080_base_256.jpg")?.let { return@withContext it.uri }
+            // 按优先级查找并验证每一张候选图片
+            val candidates = listOf(
+                "base_256.jpg", "1080_base_256.jpg",
+                "base.jpg", "1080_base.jpg",
+                "base_256.png", "1080_base_256.png",
+                "base.png", "1080_base.png"
+            )
+            for (name in candidates) {
+                val file = songFolder.findFile(name)
+                if (file != null) {
+                    isValidImage(file.uri, file.name, folderId)
+                    return@withContext file.uri
+                }
+            }
 
-            // 备选完整图
-            songFolder.findFile("base.jpg")?.let { return@withContext it.uri }
-            songFolder.findFile("1080_base.jpg")?.let { return@withContext it.uri }
-
-            null
+            // 兜底：搜索目录下任意图片文件
+            val imageExtensions = setOf("jpg", "jpeg", "png")
+            songFolder.listFiles().firstOrNull { file ->
+                !file.isDirectory &&
+                    imageExtensions.contains(file.name?.substringAfterLast(".")?.lowercase())
+            }?.let { file ->
+                isValidImage(file.uri, file.name, folderId)
+                file.uri
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get jacket for $folderId", e)
             null
@@ -144,60 +170,36 @@ class SonglistRepository(private val context: Context) {
     }
 
     /**
-     * 批量获取所有歌曲的曲绘 URI（优化版）
-     * 一次性扫描根目录找出所有歌曲文件夹，再并行扫描每个文件夹内的文件，
-     * 通过一次 listFiles 替代多次 findFile，大幅提升加载速度。
-     *
-     * @param folderIds 所有需要查找曲绘的文件夹 ID 列表
-     * @return folderId -> jacketUri 的映射表（无曲绘的文件夹不会出现在结果中）
+     * 验证文件是否为有效图片（仅读取头信息，不分配像素内存）
      */
-    suspend fun getAllJacketUris(directoryUri: Uri, folderIds: List<String>): Map<String, Uri?> = withContext(Dispatchers.IO) {
-        try {
-            val directory = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext emptyMap()
-            val folderIdSet = folderIds.toSet()
-
-            val rootChildren = directory.listFiles()
-            val folderMap = rootChildren
-                .filter { it.isDirectory && it.name in folderIdSet }
-                .associateBy { it.name }
-
-            if (folderMap.isEmpty()) return@withContext emptyMap()
-
-            val result = ConcurrentHashMap<String, Uri?>(folderMap.size)
-
-            coroutineScope {
-                folderMap.values.map { folder ->
-                    async {
-                        val folderName = folder.name ?: return@async
-                        try {
-                            val files = folder.listFiles()
-                            val jacketUri = findJacketUri(files)
-                            if (jacketUri != null) {
-                                result[folderName] = jacketUri
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to list files in $folderName", e)
-                        }
+    private fun isValidImage(uri: Uri, fileName: String? = null, parentFolder: String? = null): Boolean {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val opts = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                BitmapFactory.decodeStream(input, null, opts)
+                val valid = opts.outWidth > 0 && opts.outHeight > 0
+                if (valid && fileName != null) {
+                    val ext = fileName.substringAfterLast(".", "").lowercase()
+                    val actualMime = opts.outMimeType ?: ""
+                    val expectedMime = when (ext) {
+                        "jpg", "jpeg" -> "image/jpeg"
+                        "png" -> "image/png"
+                        else -> ""
+                    }
+                    if (expectedMime.isNotEmpty() && actualMime != expectedMime) {
+                        val filePath = if (parentFolder != null) "$parentFolder/$fileName" else fileName
+                        val msg = "扩展名与实际格式不符: $filePath (声明=$ext, 实际=$actualMime)"
+                        Log.w(TAG, msg)
+                        emitLog(msg, LogLevel.WARNING)
                     }
                 }
-            }
-
-            result
+                valid
+            } ?: false
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to batch load jacket URIs", e)
-            emptyMap()
+            false
         }
-    }
-
-    /**
-     * 从文件夹文件列表中查找曲绘文件
-     */
-    private fun findJacketUri(files: Array<DocumentFile>): Uri? {
-        val fileMap = files.filter { it.isFile }.associateBy { it.name }
-        return fileMap["base_256.jpg"]?.uri
-            ?: fileMap["1080_base_256.jpg"]?.uri
-            ?: fileMap["base.jpg"]?.uri
-            ?: fileMap["1080_base.jpg"]?.uri
     }
 
     /**
@@ -211,7 +213,9 @@ class SonglistRepository(private val context: Context) {
             val content = FileUtils.readFileContent(context, songlistFile.uri)
                 ?: throw IllegalStateException("无法读取 songlist 文件")
 
-            FileUtils.createBackup(context, DocumentFile.fromTreeUri(context, directoryUri)!!, songlistFile, BACKUP_FILENAME)
+            if (!FileUtils.createBackup(context, DocumentFile.fromTreeUri(context, directoryUri)!!, songlistFile, BACKUP_FILENAME)) {
+                Log.w(TAG, "创建 songlist 备份失败，继续执行")
+            }
 
             val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
 
@@ -353,7 +357,9 @@ class SonglistRepository(private val context: Context) {
             val content = FileUtils.readFileContent(context, songlistFile.uri)
                 ?: throw IllegalStateException("无法读取 songlist 文件")
 
-            FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)
+            if (!FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)) {
+                Log.w(TAG, "创建 songlist 备份失败，继续执行")
+            }
 
             val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
 
@@ -551,7 +557,8 @@ class SonglistRepository(private val context: Context) {
     suspend fun extractFiles(
         directoryUri: Uri,
         songId: String,
-        entries: List<ZipEntryInfo>
+        entries: List<ZipEntryInfo>,
+        onProgress: ProgressCallback? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri)
@@ -562,6 +569,7 @@ class SonglistRepository(private val context: Context) {
             
             Log.d(TAG, "Created folder: $songId")
             
+            val total = entries.size
             var successCount = 0
             entries.forEach { entryInfo ->
                 val relativePath = entryInfo.name.substringAfterLast("/")
@@ -577,6 +585,7 @@ class SonglistRepository(private val context: Context) {
                     
                     successCount++
                 }
+                onProgress?.invoke(successCount, total, relativePath.ifEmpty { entryInfo.name })
             }
             
             Log.d(TAG, "Extracted $successCount files successfully")
@@ -602,7 +611,9 @@ class SonglistRepository(private val context: Context) {
             val songlistFile = directory.findFile(SONGLIST_FILENAME)
                 ?: throw IllegalStateException("找不到 songlist 文件")
             
-            FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)
+            if (!FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)) {
+                Log.w(TAG, "创建 songlist 备份失败，继续执行")
+            }
             
             // 2. 读取原始内容
             val originalContent = FileUtils.readFileContent(context, songlistFile.uri)

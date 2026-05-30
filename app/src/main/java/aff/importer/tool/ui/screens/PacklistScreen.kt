@@ -1,5 +1,6 @@
 package aff.importer.tool.ui.screens
 
+import aff.importer.tool.R
 import aff.importer.tool.PacklistViewModel
 import aff.importer.tool.data.model.Pack
 import android.net.Uri
@@ -22,7 +23,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
@@ -32,7 +32,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -82,15 +82,6 @@ fun PacklistScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val lazyGridState = rememberLazyGridState()
     val context = LocalContext.current
-    
-    // 根据屏幕宽度计算列数
-    val configuration = context.resources.configuration
-    val screenWidthDp = configuration.screenWidthDp
-    val columns = when {
-        screenWidthDp >= 840 -> 4
-        screenWidthDp >= 600 -> 3
-        else -> 2
-    }
 
     // 加载曲包列表
     LaunchedEffect(directoryUri) {
@@ -142,20 +133,22 @@ fun PacklistScreen(
         }
     }
 
-    // 显示删除成功提示
-    LaunchedEffect(uiState.deleteSuccess) {
-        if (uiState.deleteSuccess) {
-            val message = uiState.deletedPackName?.let { "已删除: $it" } ?: "删除完成"
-            snackbarHostState.showSnackbar(message)
-            viewModel.clearDeleteSuccess()
-        }
-    }
-
     // 显示保存成功提示
     LaunchedEffect(uiState.saveSuccess) {
         if (uiState.saveSuccess) {
-            snackbarHostState.showSnackbar("保存完成")
+            snackbarHostState.showSnackbar(context.getString(R.string.packlist_saved))
             viewModel.clearSaveSuccess()
+        }
+    }
+
+    // 显示删除成功提示
+    LaunchedEffect(uiState.deleteSuccess) {
+        if (uiState.deleteSuccess) {
+            val message = uiState.deletedPackName?.let {
+                context.getString(R.string.packlist_deleted, it)
+            } ?: "删除完成"
+            snackbarHostState.showSnackbar(message)
+            viewModel.clearDeleteSuccess()
         }
     }
 
@@ -163,21 +156,12 @@ fun PacklistScreen(
         modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text("曲包管理") },
+                title = { Text(stringResource(R.string.packlist_title)) },
                 scrollBehavior = scrollBehavior,
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { viewModel.showCreatePack() },
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("新建曲包") },
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
@@ -207,17 +191,25 @@ fun PacklistScreen(
                     }
                 }
                 uiState.packs.isEmpty() && !uiState.isLoading -> {
-                    EmptyState(
-                        message = if (uiState.searchQuery.isNotEmpty()) {
-                            "没有找到匹配的曲包"
-                        } else {
-                            uiState.error ?: "没有找到任何曲包"
-                        },
+                EmptyState(
+                    message = if (uiState.searchQuery.isNotEmpty()) {
+                        stringResource(R.string.packlist_empty_search)
+                    } else {
+                        uiState.error ?: stringResource(R.string.packlist_empty)
+                    },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
                 else -> {
                     val packs = uiState.packs
+                    // 根据屏幕宽度计算列数
+                    val configuration = context.resources.configuration
+                    val screenWidthDp = configuration.screenWidthDp
+                    val columns = when {
+                        screenWidthDp >= 840 -> 4
+                        screenWidthDp >= 600 -> 3
+                        else -> 2
+                    }
 
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(columns),
@@ -265,21 +257,6 @@ fun PacklistScreen(
                 onDismiss = { viewModel.dismissDeleteConfirm() }
             )
         }
-
-        // 新建曲包弹窗
-        if (uiState.showCreateDialog) {
-            PackDetailBottomSheet(
-                pack = Pack(id = ""),
-                onDismiss = { viewModel.dismissCreatePack() },
-                onSave = { newPack ->
-                    viewModel.createPack(newPack)
-                },
-                isSaving = uiState.isSaving,
-                saveSuccess = false,
-                onClearSuccess = viewModel::clearSaveSuccess,
-                isNew = true
-            )
-        }
     }
 }
 
@@ -299,117 +276,103 @@ private fun PackCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .height(400.dp)
+            .height(300.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            // 封面铺满整卡
-            bannerUri?.let { uri ->
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(uri)
-                        .crossfade(50)
-                        .memoryCachePolicy(CachePolicy.ENABLED)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .size(512, 512)
-                        .build(),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            }
+        Column {
+            // 横幅区域
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            ) {
+                bannerUri?.let { uri ->
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(uri)
+                            .crossfade(50)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .size(256, 256)
+                            .build(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
 
-            // 封面无加载时的底色
-            if (bannerUri == null) {
+                // 删除按钮
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // 类型标签
+                val typeLabel = when (pack.type) {
+                    "single" -> "单曲"
+                    "pack" -> "曲包"
+                    else -> pack.type
+                }
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                )
-            }
-
-            // 删除按钮
-            IconButton(
-                onClick = onDelete,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .size(28.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-
-            // 类型标签
-            val typeLabel = when (pack.type) {
-                "single" -> "单曲"
-                "pack" -> "曲包"
-                else -> pack.type
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(4.dp)
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = typeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                }
+            }
+
+            // 曲包信息
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp)
             ) {
                 Text(
-                    text = typeLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimary
+                    text = pack.getDisplayName(),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-            }
 
-            // 底部半透明信息遮罩
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(
-                        brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                            colors = listOf(
-                                androidx.compose.ui.graphics.Color.Transparent,
-                                androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.7f)
-                            )
-                        )
-                    )
-                    .padding(top = 24.dp, bottom = 10.dp, start = 10.dp, end = 10.dp)
-            ) {
-                Column {
+                Text(
+                    text = pack.id,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    maxLines = 1
+                )
+
+                if (pack.getDisplayDescription().isNotBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = pack.getDisplayName(),
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = androidx.compose.ui.graphics.Color.White,
+                        text = pack.getDisplayDescription(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-
-                    Text(
-                        text = pack.id,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f),
-                        maxLines = 1
-                    )
-
-                    if (pack.getDisplayDescription().isNotBlank()) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = pack.getDisplayDescription(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
                 }
             }
         }
@@ -429,12 +392,12 @@ private fun SearchBar(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier,
-        placeholder = { Text("搜索曲包 ID 或名称") },
+        placeholder = { Text(stringResource(R.string.packlist_search_hint)) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = {
             if (query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "清除")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.clear))
                 }
             }
         },
@@ -459,9 +422,9 @@ private fun DeleteConfirmDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("确认删除") },
+        title = { Text(stringResource(R.string.confirm_delete_title)) },
         text = {
-            Text("确定要删除曲包 \"${pack.getDisplayName()}\" (${pack.id}) 吗？\n\n这将从 packlist 中移除该曲包的元数据。此操作不可撤销。")
+            Text(stringResource(R.string.packlist_delete_confirm, pack.getDisplayName(), pack.id))
         },
         confirmButton = {
             Button(
@@ -470,12 +433,12 @@ private fun DeleteConfirmDialog(
                     containerColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Text("删除")
+                Text(stringResource(R.string.action_delete))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(stringResource(R.string.action_cancel))
             }
         }
     )

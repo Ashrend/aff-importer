@@ -8,6 +8,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import aff.importer.tool.data.CrashLogManager
+import aff.importer.tool.data.PacklistRepository
 import aff.importer.tool.data.PreferencesRepository
 import aff.importer.tool.data.SonglistRepository
 import aff.importer.tool.data.ZipEntryInfo
@@ -18,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,6 +41,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _directoryUri = MutableStateFlow<Uri?>(null)
     val directoryUri: StateFlow<Uri?> = _directoryUri.asStateFlow()
     
+    companion object {
+        private const val MAX_LOG_ENTRIES = 200
+    }
+
     // 操作日志
     private val _logEntries = MutableStateFlow<List<LogEntry>>(emptyList())
     val logEntries: StateFlow<List<LogEntry>> = _logEntries.asStateFlow()
@@ -47,6 +54,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentSongId: String? = null
     
     init {
+        // 收集仓库日志到界面
+        viewModelScope.launch {
+            SonglistRepository.appLog.collect { entry ->
+                addLog(entry.message, entry.level)
+            }
+        }
+        viewModelScope.launch {
+            PacklistRepository.appLog.collect { entry ->
+                addLog(entry.message, entry.level)
+            }
+        }
+
         // 尝试恢复已保存的目录
         viewModelScope.launch {
             val savedUri = preferencesRepository.savedDirectoryUri.first()
@@ -56,6 +75,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 检查权限是否仍然有效
                     if (checkUriPermission(uri)) {
                         _directoryUri.value = uri
+                        CrashLogManager.cachedDirectoryUri = uri
                         addLog("已恢复上次选择的目录", LogLevel.INFO)
                     } else {
                         addLog("目录权限已过期，请重新选择", LogLevel.WARNING)
@@ -117,12 +137,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 
                 // 保存并更新状态
                 _directoryUri.value = uri
+                CrashLogManager.cachedDirectoryUri = uri
                 preferencesRepository.saveDirectoryUri(uri.toString())
                 _importState.value = ImportState.Idle
                 
                 addLog("目录已选择: ${songlistRepository.getDirectoryPath(uri)}", LogLevel.SUCCESS)
             } catch (e: Exception) {
-                _importState.value = ImportState.Error("无法获取目录权限: ${e.message}")
+                _importState.value = ImportState.Error("无法获取目录权限，请重试")
                 addLog("权限获取失败: ${e.message}", LogLevel.ERROR)
             }
         }
@@ -172,11 +193,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addLog("解析成功: 歌曲 id = $songId, 共 ${entries.size} 个文件", LogLevel.SUCCESS)
                 
                 // 开始解压
-                _importState.value = ImportState.Extracting("", 0, entries.size)
                 addLog("开始解压文件到 $songId/ 目录...", LogLevel.INFO)
                 
                 val extractSuccess = withContext(Dispatchers.IO) {
-                    songlistRepository.extractFiles(directoryUri, songId, entries)
+                    songlistRepository.extractFiles(directoryUri, songId, entries) { completed, total, currentFile ->
+                        _importState.value = ImportState.Extracting(currentFile, completed, total)
+                    }
                 }
                 
                 if (!extractSuccess) {
@@ -206,7 +228,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addLog("导入成功！歌曲 id: $songId", LogLevel.SUCCESS)
                 
             } catch (e: Exception) {
-                _importState.value = ImportState.Error("导入失败: ${e.message}", e)
+                _importState.value = ImportState.Error("导入失败，请检查文件格式和目录权限", e)
                 addLog("导入异常: ${e.message}", LogLevel.ERROR)
             }
         }
@@ -236,7 +258,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun addLog(message: String, level: LogLevel = LogLevel.INFO) {
         val entry = LogEntry(message = message, level = level)
-        _logEntries.value = _logEntries.value + entry
+        val current = _logEntries.value
+        _logEntries.value = if (current.size >= MAX_LOG_ENTRIES) {
+            current.drop(1) + entry
+        } else {
+            current + entry
+        }
+        CrashLogManager.addLog(entry)
     }
     
     /**

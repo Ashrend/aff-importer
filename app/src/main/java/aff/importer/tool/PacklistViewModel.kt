@@ -90,15 +90,12 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 hasLoaded = true
-
-                if (packs.isNotEmpty()) {
-                    preloadAllPackBannerUris(directoryUri, packs)
-                }
             } catch (e: Exception) {
+                Log.e(TAG, "Failed to load packs", e)
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        error = "加载失败: ${e.message}"
+                        error = "加载失败，请检查目录和文件格式"
                     )
                 }
             }
@@ -121,25 +118,6 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * 批量预加载所有曲包横幅 URI
-     * 一次性扫描 pack/ 和 pack/1080/ 目录，取代按需懒加载。
-     */
-    private fun preloadAllPackBannerUris(directoryUri: Uri, packs: List<Pack>) {
-        viewModelScope.launch(loadDispatcher) {
-            try {
-                val packIds = packs.map { it.id }
-                val uris = packlistRepository.getAllPackBannerUris(directoryUri, packIds)
-                bannerUris.putAll(uris)
-                withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy() }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to preload all pack banner URIs", e)
-            }
-        }
-    }
-
-    /**
      * 更新可见区域 - 由 UI 层在滚动时调用
      */
     fun updateVisibleItems(
@@ -150,8 +128,6 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
         val allPacks = _uiState.value.packs
 
         val packMap = allPacks.associateBy { it.id }
-
-        if (allPacks.all { bannerUris.containsKey(it.id) }) return
 
         // 1. 取消不在可见或预加载范围内的任务
         val keepIds = (visibleItemIds + preloadItemIds).toSet()
@@ -171,7 +147,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
 
             val job = viewModelScope.launch(loadDispatcher) {
                 try {
-                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id)
+                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id, pack.type)
                     bannerUris[pack.id] = uri
 
                     withContext(Dispatchers.Main) {
@@ -202,7 +178,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                 try {
                     if (!isActive) return@launch
 
-                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id)
+                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id, pack.type)
                     bannerUris[pack.id] = uri
 
                     withContext(Dispatchers.Main) {
@@ -227,7 +203,6 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
         val directoryUri = currentDirectoryUri ?: return
         val allPacks = _uiState.value.packs
 
-        if (allPacks.all { bannerUris.containsKey(it.id) }) return
         if (backgroundLoadJob?.isActive == true) return
 
         backgroundLoadJob = viewModelScope.launch(loadDispatcher) {
@@ -237,7 +212,7 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 try {
-                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id)
+                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id, pack.type)
                     bannerUris[pack.id] = uri
 
                     if (bannerUris.size % 10 == 0) {
@@ -325,41 +300,6 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                         error = "保存失败"
                     )
                 }
-            }
-        }
-    }
-
-    /**
-     * 显示新建曲包对话框
-     */
-    fun showCreatePack() {
-        _uiState.update { it.copy(showCreateDialog = true, saveSuccess = false) }
-    }
-
-    /**
-     * 取消新建曲包
-     */
-    fun dismissCreatePack() {
-        _uiState.update { it.copy(showCreateDialog = false) }
-    }
-
-    /**
-     * 创建新曲包
-     */
-    fun createPack(newPack: Pack) {
-        val directoryUri = currentDirectoryUri ?: return
-
-        _uiState.update { it.copy(isSaving = true) }
-
-        viewModelScope.launch {
-            val success = packlistRepository.addPack(directoryUri, newPack)
-
-            if (success) {
-                hasLoaded = false
-                loadPacks(directoryUri)
-                _uiState.update { it.copy(isSaving = false, showCreateDialog = false) }
-            } else {
-                _uiState.update { it.copy(isSaving = false, error = "创建失败") }
             }
         }
     }
