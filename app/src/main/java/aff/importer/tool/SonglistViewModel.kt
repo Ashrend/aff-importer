@@ -42,7 +42,7 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     private var hasLoaded = false
 
     // 曲绘 URI 缓存（线程安全）
-    private val jacketUris = ConcurrentHashMap<String, Uri?>()
+    private val jacketUris = ConcurrentHashMap<String, Uri>()
 
     // 正在进行的加载任务（线程安全）
     private val activeLoads = ConcurrentHashMap<String, Job>()
@@ -158,7 +158,7 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
             val remoteDlChanged = originalSong != null && originalSong.remoteDl != updatedSong.remoteDl
 
             if (remoteDlChanged) {
-                val oldFolderId = originalSong!!.getActualFolderId()
+                val oldFolderId = originalSong.getActualFolderId()
                 val newFolderId = updatedSong.getActualFolderId()
 
                 Log.d(TAG, "Remote DL changed, renaming folder from $oldFolderId to $newFolderId")
@@ -330,12 +330,14 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
             val job = viewModelScope.launch(loadDispatcher) {
                 try {
                     val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
-                    jacketUris[folderId] = uri
+                    if (uri != null) {
+                        jacketUris[folderId] = uri
+                    }
 
                     withContext(Dispatchers.Main) {
                         _uiState.update { it.copy() }
                     }
-                } catch (e: CancellationException) {
+                } catch (_: CancellationException) {
                     // 正常取消，忽略
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to load jacket for $folderId", e)
@@ -362,12 +364,14 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                     if (!isActive) return@launch
 
                     val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
-                    jacketUris[folderId] = uri
+                    if (uri != null) {
+                        jacketUris[folderId] = uri
+                    }
 
                     withContext(Dispatchers.Main) {
                         _uiState.update { it.copy() }
                     }
-                } catch (e: CancellationException) {
+                } catch (_: CancellationException) {
                     // 正常取消
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to preload jacket for $folderId", e)
@@ -398,7 +402,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
 
                 try {
                     val uri = songlistRepository.getSongJacketUri(directoryUri, folderId)
-                    jacketUris[folderId] = uri
+                    if (uri != null) {
+                        jacketUris[folderId] = uri
+                    }
 
                     if (jacketUris.size % 10 == 0) {
                         withContext(Dispatchers.Main) {
@@ -418,15 +424,4 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /**
-     * 强制刷新所有曲绘
-     */
-    fun clearJacketCache() {
-        jacketUris.clear()
-        activeLoads.values.forEach { it.cancel() }
-        activeLoads.clear()
-        backgroundLoadJob?.cancel()
-        backgroundLoadJob = null
-        _uiState.update { it.copy() }
-    }
 }
