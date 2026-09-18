@@ -2,6 +2,7 @@ package aff.importer.tool.ui.screens
 
 import aff.importer.tool.R
 import aff.importer.tool.SonglistViewModel
+import aff.importer.tool.data.model.DuplicateSongGroup
 import aff.importer.tool.data.model.Song
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -15,13 +16,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Close
@@ -225,10 +229,10 @@ fun SonglistScreen(
                         // 关键优化：预加载屏幕外的项，避免滑动时白屏
                         modifier = Modifier.weight(1f)
                     ) {
-                        items(
+                        itemsIndexed(
                             items = songs,
-                            key = { it.id }
-                        ) { song ->
+                            key = { index, song -> "${song.id}#$index" }
+                        ) { _, song ->
                             // 直接使用预加载的 URI，无需复杂可见性检测
                             SongCardSimple(
                                 song = song,
@@ -262,6 +266,15 @@ fun SonglistScreen(
                 song = uiState.songToDelete,
                 onConfirm = { viewModel.confirmDelete() },
                 onDismiss = { viewModel.dismissDeleteConfirm() }
+            )
+        }
+        
+        // 重复条目提示对话框
+        if (uiState.showDuplicateDialog && uiState.duplicateGroups.isNotEmpty()) {
+            DuplicateSongsDialog(
+                groups = uiState.duplicateGroups,
+                onDeleteEntry = { index -> viewModel.deleteDuplicateEntry(index) },
+                onDismiss = { viewModel.dismissDuplicateDialog() }
             )
         }
     }
@@ -448,16 +461,19 @@ private fun SimpleDifficultyBadges(difficulties: List<Song.Difficulty>) {
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         sorted.forEach { diff ->
-            val color = when (diff.ratingClass) {
-                0 -> androidx.compose.ui.graphics.Color(0xFF87CEEB)
-                1 -> androidx.compose.ui.graphics.Color(0xFF90EE90)
-                2 -> androidx.compose.ui.graphics.Color(0xFF800080)
-                3 -> androidx.compose.ui.graphics.Color(0xFFFF0000)
-                4 -> androidx.compose.ui.graphics.Color(0xFFDA70D6)
+            val isInscribed = diff.ratingClass == 3 && diff.ratingClassAlias == 1
+            val color = when {
+                isInscribed -> androidx.compose.ui.graphics.Color(0xFF00008B)
+                diff.ratingClass == 0 -> androidx.compose.ui.graphics.Color(0xFF87CEEB)
+                diff.ratingClass == 1 -> androidx.compose.ui.graphics.Color(0xFF90EE90)
+                diff.ratingClass == 2 -> androidx.compose.ui.graphics.Color(0xFF800080)
+                diff.ratingClass == 3 -> androidx.compose.ui.graphics.Color(0xFFFF0000)
+                diff.ratingClass == 4 -> androidx.compose.ui.graphics.Color(0xFFDA70D6)
                 else -> MaterialTheme.colorScheme.surfaceVariant
             }
-            val textColor = when (diff.ratingClass) {
-                0, 1, 4 -> androidx.compose.ui.graphics.Color.Black
+            val textColor = when {
+                isInscribed -> androidx.compose.ui.graphics.Color.White
+                diff.ratingClass == 0 || diff.ratingClass == 1 || diff.ratingClass == 4 -> androidx.compose.ui.graphics.Color.Black
                 else -> androidx.compose.ui.graphics.Color.White
             }
             
@@ -546,6 +562,83 @@ private fun DeleteConfirmDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text(stringResource(R.string.action_cancel))
+            }
+        }
+    )
+}
+
+/**
+ * 重复条目处理对话框 - 让用户选择删除哪一项
+ */
+@Composable
+private fun DuplicateSongsDialog(
+    groups: List<DuplicateSongGroup>,
+    onDeleteEntry: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.songlist_duplicate_title)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 400.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = stringResource(R.string.songlist_duplicate_message),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                groups.forEach { group ->
+                    Text(
+                        text = stringResource(
+                            R.string.songlist_duplicate_group,
+                            group.id,
+                            group.entries.size
+                        ),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                    )
+                    group.entries.forEach { entry ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "#${entry.index + 1}  ${entry.song.getDisplayTitle()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val details = buildString {
+                                    append(entry.song.getDisplayArtist())
+                                    if (entry.song.set.isNotBlank()) append(" · ${entry.song.set}")
+                                    if (entry.song.version.isNotBlank()) append(" · v${entry.song.version}")
+                                }
+                                Text(
+                                    text = details,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            TextButton(onClick = { onDeleteEntry(entry.index) }) {
+                                Text(
+                                    text = stringResource(R.string.songlist_duplicate_delete_entry),
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.songlist_duplicate_later))
             }
         }
     )

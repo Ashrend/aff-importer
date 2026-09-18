@@ -17,6 +17,18 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
 
 /**
+ * packlist 添加结果
+ */
+sealed class PacklistAddResult {
+    /** 已成功添加 */
+    data object Added : PacklistAddResult()
+    /** ID 已存在，取消创建 */
+    data object DuplicateId : PacklistAddResult()
+    /** 添加失败 */
+    data object Failed : PacklistAddResult()
+}
+
+/**
  * Packlist 仓库，处理 packlist 读取与 JSON 更新
  */
 class PacklistRepository(private val context: Context) {
@@ -257,6 +269,114 @@ class PacklistRepository(private val context: Context) {
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to delete pack", e)
+            false
+        }
+    }
+
+    /**
+     * 添加新曲包（id 已存在时取消创建并返回 DuplicateId）
+     */
+    suspend fun addPack(directoryUri: Uri, newPack: Pack): PacklistAddResult = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+            val packlistFile = directory.findFile(PACKLIST_FILENAME)
+                ?: throw IllegalStateException("找不到 packlist 文件")
+            val content = FileUtils.readFileContent(context, packlistFile.uri)
+                ?: throw IllegalStateException("无法读取 packlist 文件")
+
+            val jsonElement = JsonParser.parseString(content)
+            val packsArray = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") ->
+                    jsonElement.asJsonObject.getAsJsonArray("packs")
+                jsonElement.isJsonArray -> jsonElement.asJsonArray
+                else -> throw IllegalStateException("packlist 格式不正确")
+            }
+
+            // 防重：id 已存在时取消创建
+            val alreadyExists = packsArray.any { element ->
+                element.isJsonObject && element.asJsonObject.get("id")?.asString == newPack.id
+            }
+            if (alreadyExists) {
+                Log.d(TAG, "Pack id already exists, skip creation: ${newPack.id}")
+                emitLog("曲包 ID 已存在，取消创建: ${newPack.id}", LogLevel.WARNING)
+                return@withContext PacklistAddResult.DuplicateId
+            }
+
+            if (!FileUtils.createBackup(context, directory, packlistFile, "packlist.backup")) {
+                Log.w(TAG, "创建 packlist 备份失败，继续执行")
+            }
+
+            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
+            val newPackObject = newPack.toJsonObject()
+
+            val resultContent = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
+                    val rootObject = jsonElement.asJsonObject
+                    packsArray.add(newPackObject)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
+                }
+                else -> {
+                    packsArray.add(newPackObject)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(packsArray))
+                }
+            }
+
+            FileUtils.writeFileContent(context, packlistFile.uri, resultContent)
+            Log.d(TAG, "Added pack: ${newPack.id}")
+            PacklistAddResult.Added
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to add pack", e)
+            PacklistAddResult.Failed
+        }
+    }
+
+    /**
+     * 删除指定索引位置的 packlist 条目（仅移除 JSON 条目）
+     * 用于清理重复条目
+     */
+    suspend fun deletePackEntryAt(directoryUri: Uri, index: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+            val packlistFile = directory.findFile(PACKLIST_FILENAME)
+                ?: throw IllegalStateException("找不到 packlist 文件")
+            val content = FileUtils.readFileContent(context, packlistFile.uri)
+                ?: throw IllegalStateException("无法读取 packlist 文件")
+
+            if (!FileUtils.createBackup(context, directory, packlistFile, "packlist.backup")) {
+                Log.w(TAG, "创建 packlist 备份失败，继续执行")
+            }
+
+            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
+            val jsonElement = JsonParser.parseString(content)
+
+            val resultContent = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("packs") -> {
+                    val rootObject = jsonElement.asJsonObject
+                    val packsArray = rootObject.getAsJsonArray("packs")
+                    if (index !in 0 until packsArray.size()) {
+                        throw IllegalStateException("条目索引越界: $index")
+                    }
+                    packsArray.remove(index)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
+                }
+                jsonElement.isJsonArray -> {
+                    val packsArray = jsonElement.asJsonArray
+                    if (index !in 0 until packsArray.size()) {
+                        throw IllegalStateException("条目索引越界: $index")
+                    }
+                    packsArray.remove(index)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(packsArray))
+                }
+                else -> throw IllegalStateException("packlist 格式不正确")
+            }
+
+            FileUtils.writeFileContent(context, packlistFile.uri, resultContent)
+            Log.d(TAG, "Deleted packlist entry at index $index")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete packlist entry", e)
             false
         }
     }

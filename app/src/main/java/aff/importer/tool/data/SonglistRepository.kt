@@ -32,6 +32,18 @@ data class ImportResult(
 )
 
 /**
+ * songlist 更新结果
+ */
+sealed class SonglistUpdateResult {
+    /** 已追加新条目 */
+    data object Appended : SonglistUpdateResult()
+    /** 已存在同 id 条目，跳过追加（仅文件被更新） */
+    data object SkippedExisting : SonglistUpdateResult()
+    /** 更新失败 */
+    data object Failed : SonglistUpdateResult()
+}
+
+/**
  * ZIP 条目信息
  */
 data class ZipEntryInfo(
@@ -598,12 +610,13 @@ class SonglistRepository(private val context: Context) {
     
     /**
      * 更新客户端 songlist 文件
-     * 策略：创建备份后，将原始内容解析，追加新歌曲，然后用 Gson 格式化输出
+     * 策略：读取原始内容，若已存在同 id 条目则跳过追加（仅更新文件），
+     * 否则创建备份后追加新歌曲，然后用 Gson 格式化输出
      */
     suspend fun updateClientSonglist(
         directoryUri: Uri,
         entries: List<ZipEntryInfo>
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): SonglistUpdateResult = withContext(Dispatchers.IO) {
         try {
             val directory = DocumentFile.fromTreeUri(context, directoryUri)
                 ?: throw IllegalStateException("无法访问目标目录")
@@ -611,11 +624,7 @@ class SonglistRepository(private val context: Context) {
             val songlistFile = directory.findFile(SONGLIST_FILENAME)
                 ?: throw IllegalStateException("找不到 songlist 文件")
             
-            if (!FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)) {
-                Log.w(TAG, "创建 songlist 备份失败，继续执行")
-            }
-            
-            // 2. 读取原始内容
+            // 读取原始内容
             val originalContent = FileUtils.readFileContent(context, songlistFile.uri)
                 ?: throw IllegalStateException("无法读取 songlist 文件")
             
@@ -639,33 +648,102 @@ class SonglistRepository(private val context: Context) {
                 else -> throw IllegalStateException("ZIP中的songlist格式不正确")
             }
             
+            val newSongId = newSongObject.get("id")?.asString
+                ?: throw IllegalStateException("ZIP中的songlist缺少 id 字段")
+            
             val originalJson = JsonParser.parseString(originalContent)
+            
+            val originalSongsArray = when {
+                originalJson.isJsonObject && originalJson.asJsonObject.has("songs") ->
+                    originalJson.asJsonObject.getAsJsonArray("songs")
+                originalJson.isJsonArray -> originalJson.asJsonArray
+                else -> throw IllegalStateException("客户端 songlist 格式不正确")
+            }
+            
+            // 防重：已存在同 id 条目时跳过追加（文件已由 extractFiles 更新）
+            val alreadyExists = originalSongsArray.any { element ->
+                element.isJsonObject && element.asJsonObject.get("id")?.asString == newSongId
+            }
+            if (alreadyExists) {
+                Log.d(TAG, "Song already exists, skip append: $newSongId")
+                emitLog("曲目已存在，仅更新文件，跳过追加: $newSongId", LogLevel.INFO)
+                return@withContext SonglistUpdateResult.SkippedExisting
+            }
+            
+            if (!FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)) {
+                Log.w(TAG, "创建 songlist 备份失败，继续执行")
+            }
             
             val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
             
             val resultContent = when {
                 originalJson.isJsonObject && originalJson.asJsonObject.has("songs") -> {
                     val rootObject = originalJson.asJsonObject
-                    val songsArray = rootObject.getAsJsonArray("songs")
-                    songsArray.add(newSongObject)
+                    originalSongsArray.add(newSongObject)
                     FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
                 }
-                originalJson.isJsonArray -> {
-                    val songsArray = originalJson.asJsonArray
-                    songsArray.add(newSongObject)
-                    FileUtils.formatWithTwoSpaces(gson.toJson(songsArray))
-                }
                 else -> {
-                    throw IllegalStateException("客户端 songlist 格式不正确")
+                    originalSongsArray.add(newSongObject)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(originalSongsArray))
                 }
             }
             
             FileUtils.writeFileContent(context, songlistFile.uri, resultContent)
             
-            Log.d(TAG, "Successfully updated songlist, added song: ${newSongObject.get("id")?.asString}")
-            true
+            Log.d(TAG, "Successfully updated songlist, added song: $newSongId")
+            SonglistUpdateResult.Appended
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update songlist", e)
+            SonglistUpdateResult.Failed
+        }
+    }
+
+    /**
+     * 删除指定索引位置的 songlist 条目（仅移除 JSON 条目，不删除乐曲文件夹）
+     * 用于清理重复条目
+     */
+    suspend fun deleteSongEntryAt(directoryUri: Uri, index: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val directory = DocumentFile.fromTreeUri(context, directoryUri)
+                ?: throw IllegalStateException("无法访问目录")
+            val songlistFile = directory.findFile(SONGLIST_FILENAME)
+                ?: throw IllegalStateException("找不到 songlist 文件")
+            val content = FileUtils.readFileContent(context, songlistFile.uri)
+                ?: throw IllegalStateException("无法读取 songlist 文件")
+
+            if (!FileUtils.createBackup(context, directory, songlistFile, BACKUP_FILENAME)) {
+                Log.w(TAG, "创建 songlist 备份失败，继续执行")
+            }
+
+            val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
+            val jsonElement = JsonParser.parseString(content)
+
+            val resultContent = when {
+                jsonElement.isJsonObject && jsonElement.asJsonObject.has("songs") -> {
+                    val rootObject = jsonElement.asJsonObject
+                    val songsArray = rootObject.getAsJsonArray("songs")
+                    if (index !in 0 until songsArray.size()) {
+                        throw IllegalStateException("条目索引越界: $index")
+                    }
+                    songsArray.remove(index)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(rootObject))
+                }
+                jsonElement.isJsonArray -> {
+                    val songsArray = jsonElement.asJsonArray
+                    if (index !in 0 until songsArray.size()) {
+                        throw IllegalStateException("条目索引越界: $index")
+                    }
+                    songsArray.remove(index)
+                    FileUtils.formatWithTwoSpaces(gson.toJson(songsArray))
+                }
+                else -> throw IllegalStateException("songlist 格式不正确")
+            }
+
+            FileUtils.writeFileContent(context, songlistFile.uri, resultContent)
+            Log.d(TAG, "Deleted songlist entry at index $index")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete songlist entry", e)
             false
         }
     }

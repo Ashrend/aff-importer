@@ -5,7 +5,10 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import aff.importer.tool.data.PacklistAddResult
 import aff.importer.tool.data.PacklistRepository
+import aff.importer.tool.data.model.DuplicatePackEntry
+import aff.importer.tool.data.model.DuplicatePackGroup
 import aff.importer.tool.data.model.Pack
 import aff.importer.tool.data.model.PacklistUiState
 import kotlinx.coroutines.CancellationException
@@ -79,13 +82,16 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
         currentListLoadJob = viewModelScope.launch {
             try {
                 val packs = packlistRepository.getAllPacks(directoryUri)
+                val duplicateGroups = detectDuplicateGroups(packs)
 
                 _uiState.update {
                     it.copy(
                         isLoading = false,
                         allPacks = packs,
                         packs = packs,
-                        error = if (packs.isEmpty()) "目录中没有找到 packlist 文件或曲包列表为空" else null
+                        error = if (packs.isEmpty()) "目录中没有找到 packlist 文件或曲包列表为空" else null,
+                        duplicateGroups = duplicateGroups,
+                        showDuplicateDialog = duplicateGroups.isNotEmpty()
                     )
                 }
 
@@ -386,6 +392,88 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
      */
     fun clearDeleteSuccess() {
         _uiState.update { it.copy(deleteSuccess = false, deletedPackName = null) }
+    }
+
+    /**
+     * 显示新建曲包对话框
+     */
+    fun showCreatePack() {
+        _uiState.update { it.copy(showCreateDialog = true, saveSuccess = false) }
+    }
+
+    /**
+     * 取消新建曲包
+     */
+    fun dismissCreatePack() {
+        _uiState.update { it.copy(showCreateDialog = false) }
+    }
+
+    /**
+     * 创建新曲包（id 已存在时阻止创建并提示）
+     */
+    fun createPack(newPack: Pack) {
+        val directoryUri = currentDirectoryUri ?: return
+
+        _uiState.update { it.copy(isSaving = true) }
+
+        viewModelScope.launch {
+            when (packlistRepository.addPack(directoryUri, newPack)) {
+                PacklistAddResult.Added -> {
+                    hasLoaded = false
+                    loadPacks(directoryUri)
+                    _uiState.update { it.copy(isSaving = false, showCreateDialog = false) }
+                }
+                PacklistAddResult.DuplicateId -> {
+                    // 保持对话框打开，提示用户更换 ID
+                    _uiState.update {
+                        it.copy(isSaving = false, error = "曲包 ID 已存在，请更换 ID 后重试")
+                    }
+                }
+                PacklistAddResult.Failed -> {
+                    _uiState.update { it.copy(isSaving = false, error = "创建失败") }
+                }
+            }
+        }
+    }
+
+    /**
+     * 检测相同 id 的重复条目组
+     */
+    private fun detectDuplicateGroups(packs: List<Pack>): List<DuplicatePackGroup> {
+        return packs.withIndex()
+            .groupBy { it.value.id }
+            .filter { it.value.size > 1 }
+            .map { (id, indexed) ->
+                DuplicatePackGroup(
+                    id = id,
+                    entries = indexed.map { DuplicatePackEntry(index = it.index, pack = it.value) }
+                )
+            }
+    }
+
+    /**
+     * 忽略重复条目提示
+     */
+    fun dismissDuplicateDialog() {
+        _uiState.update { it.copy(showDuplicateDialog = false) }
+    }
+
+    /**
+     * 删除指定位置的重复条目（仅移除 JSON 条目），完成后刷新列表
+     */
+    fun deleteDuplicateEntry(index: Int) {
+        val directoryUri = currentDirectoryUri ?: return
+        _uiState.update { it.copy(showDuplicateDialog = false) }
+
+        viewModelScope.launch {
+            val success = packlistRepository.deletePackEntryAt(directoryUri, index)
+            if (success) {
+                hasLoaded = false
+                loadPacks(directoryUri)
+            } else {
+                _uiState.update { it.copy(error = "删除重复条目失败") }
+            }
+        }
     }
 
     /**

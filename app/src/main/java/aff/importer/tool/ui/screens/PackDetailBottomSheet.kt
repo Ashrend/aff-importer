@@ -378,7 +378,7 @@ private fun PackDetailContent(
                     onSave(updatedPack)
                 },
                 modifier = Modifier.weight(1f),
-                enabled = !isSaving
+                enabled = !isSaving && (!isNew || id.isNotBlank())
             ) {
                 if (isSaving) {
                     CircularProgressIndicator(

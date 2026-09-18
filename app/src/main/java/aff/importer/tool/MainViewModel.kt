@@ -12,6 +12,7 @@ import aff.importer.tool.data.CrashLogManager
 import aff.importer.tool.data.PacklistRepository
 import aff.importer.tool.data.PreferencesRepository
 import aff.importer.tool.data.SonglistRepository
+import aff.importer.tool.data.SonglistUpdateResult
 import aff.importer.tool.data.ZipEntryInfo
 import aff.importer.tool.data.model.ImportState
 import aff.importer.tool.data.model.LogEntry
@@ -213,14 +214,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _importState.value = ImportState.UpdatingSonglist
                 addLog("正在更新 songlist 文件...", LogLevel.INFO)
                 
-                val updateSuccess = withContext(Dispatchers.IO) {
+                val updateResult = withContext(Dispatchers.IO) {
                     songlistRepository.updateClientSonglist(directoryUri, entries)
                 }
                 
-                if (!updateSuccess) {
-                    _importState.value = ImportState.Error("更新 songlist 失败")
-                    addLog("更新失败", LogLevel.ERROR)
-                    return@launch
+                when (updateResult) {
+                    SonglistUpdateResult.Failed -> {
+                        _importState.value = ImportState.Error("更新 songlist 失败")
+                        addLog("更新失败", LogLevel.ERROR)
+                        return@launch
+                    }
+                    SonglistUpdateResult.SkippedExisting -> {
+                        addLog("曲目已存在，仅更新文件，跳过 songlist 追加", LogLevel.WARNING)
+                    }
+                    SonglistUpdateResult.Appended -> {
+                        addLog("songlist 已追加新曲目条目", LogLevel.INFO)
+                    }
                 }
                 
                 // 全部成功

@@ -2,6 +2,7 @@ package aff.importer.tool.ui.screens
 
 import aff.importer.tool.R
 import aff.importer.tool.PacklistViewModel
+import aff.importer.tool.data.model.DuplicatePackGroup
 import aff.importer.tool.data.model.Pack
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -15,14 +16,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
@@ -32,6 +37,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -164,6 +170,15 @@ fun PacklistScreen(
                 )
             )
         },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { viewModel.showCreatePack() },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text(stringResource(R.string.packlist_create)) },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         Column(
@@ -219,10 +234,10 @@ fun PacklistScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        items(
+                        itemsIndexed(
                             items = packs,
-                            key = { it.id }
-                        ) { pack ->
+                            key = { index, pack -> "${pack.id}#$index" }
+                        ) { _, pack ->
                             PackCard(
                                 pack = pack,
                                 bannerUri = viewModel.getBannerUri(pack),
@@ -249,12 +264,36 @@ fun PacklistScreen(
             )
         }
 
+        // 新建曲包弹窗
+        if (uiState.showCreateDialog) {
+            PackDetailBottomSheet(
+                pack = Pack(id = ""),
+                onDismiss = { viewModel.dismissCreatePack() },
+                onSave = { newPack ->
+                    viewModel.createPack(newPack)
+                },
+                isSaving = uiState.isSaving,
+                saveSuccess = false,
+                onClearSuccess = viewModel::clearSaveSuccess,
+                isNew = true
+            )
+        }
+
         // 删除确认对话框
         if (uiState.showDeleteConfirm) {
             DeleteConfirmDialog(
                 pack = uiState.packToDelete,
                 onConfirm = { viewModel.confirmDelete() },
                 onDismiss = { viewModel.dismissDeleteConfirm() }
+            )
+        }
+
+        // 重复条目提示对话框
+        if (uiState.showDuplicateDialog && uiState.duplicateGroups.isNotEmpty()) {
+            DuplicatePacksDialog(
+                groups = uiState.duplicateGroups,
+                onDeleteEntry = { index -> viewModel.deleteDuplicateEntry(index) },
+                onDismiss = { viewModel.dismissDuplicateDialog() }
             )
         }
     }
@@ -470,4 +509,83 @@ private fun EmptyState(
             )
         }
     }
+}
+
+/**
+ * 重复条目处理对话框 - 让用户选择删除哪一项
+ */
+@Composable
+private fun DuplicatePacksDialog(
+    groups: List<DuplicatePackGroup>,
+    onDeleteEntry: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.packlist_duplicate_title)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 400.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = stringResource(R.string.packlist_duplicate_message),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                groups.forEach { group ->
+                    Text(
+                        text = stringResource(
+                            R.string.packlist_duplicate_group,
+                            group.id,
+                            group.entries.size
+                        ),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                    )
+                    group.entries.forEach { entry ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "#${entry.index + 1}  ${entry.pack.getDisplayName()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val details = buildString {
+                                    if (entry.pack.type.isNotBlank()) append("type=${entry.pack.type}")
+                                    if (entry.pack.section.isNotBlank()) append(" · ${entry.pack.section}")
+                                    if (entry.pack.packParent.isNotBlank()) append(" · parent=${entry.pack.packParent}")
+                                }
+                                if (details.isNotBlank()) {
+                                    Text(
+                                        text = details,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            TextButton(onClick = { onDeleteEntry(entry.index) }) {
+                                Text(
+                                    text = stringResource(R.string.packlist_duplicate_delete_entry),
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.packlist_duplicate_later))
+            }
+        }
+    )
 }

@@ -62,6 +62,7 @@ data class Song(
         
         // 可选字段
         val ratingPlus: Boolean = false,
+        val ratingClassAlias: Int = 0, // 难度别名：仅 ratingClass=3（BYD）且值为 1 时有效，即 Inscribed 难度
         val legacy11: Boolean = false,
         val plusFingers: Boolean = false,
         val titleLocalized: LocalizedText = LocalizedText(),
@@ -208,6 +209,7 @@ data class Song(
                 jacketDesigner = json.get("jacketDesigner")?.asString ?: "",
                 rating = json.get("rating")?.asInt ?: 0,
                 ratingPlus = json.get("ratingPlus")?.asBoolean ?: false,
+                ratingClassAlias = json.get("ratingClassAlias")?.asInt ?: 0,
                 legacy11 = json.get("legacy11")?.asBoolean ?: false,
                 plusFingers = json.get("plusFingers")?.asBoolean ?: false,
                 titleLocalized = parseLocalizedText(json.getAsJsonObject("title_localized")),
@@ -313,6 +315,7 @@ data class Song(
             addProperty("jacketDesigner", jacketDesigner)
             addProperty("rating", rating)
             if (ratingPlus) addProperty("ratingPlus", true)
+            if (ratingClass == 3 && ratingClassAlias == 1) addProperty("ratingClassAlias", ratingClassAlias)
             if (legacy11) addProperty("legacy11", true)
             if (plusFingers) addProperty("plusFingers", true)
             

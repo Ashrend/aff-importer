@@ -6,6 +6,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import aff.importer.tool.data.SonglistRepository
+import aff.importer.tool.data.model.DuplicateSongEntry
+import aff.importer.tool.data.model.DuplicateSongGroup
 import aff.importer.tool.data.model.Song
 import aff.importer.tool.data.model.SonglistUiState
 import kotlinx.coroutines.CancellationException
@@ -87,13 +89,16 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
         currentListLoadJob = viewModelScope.launch {
             try {
                 val songs = songlistRepository.getAllSongs(directoryUri)
+                val duplicateGroups = detectDuplicateGroups(songs)
 
                 _uiState.update {
                     it.copy(
                         isLoading = false,
                         allSongs = songs,
                         songs = songs,
-                        error = if (songs.isEmpty()) "目录中没有找到曲目" else null
+                        error = if (songs.isEmpty()) "目录中没有找到曲目" else null,
+                        duplicateGroups = duplicateGroups,
+                        showDuplicateDialog = duplicateGroups.isNotEmpty()
                     )
                 }
 
@@ -296,6 +301,46 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
 
     fun clearDeleteSuccess() {
         _uiState.update { it.copy(deleteSuccess = false, deletedSongName = null) }
+    }
+
+    /**
+     * 检测相同 id 的重复条目组
+     */
+    private fun detectDuplicateGroups(songs: List<Song>): List<DuplicateSongGroup> {
+        return songs.withIndex()
+            .groupBy { it.value.id }
+            .filter { it.value.size > 1 }
+            .map { (id, indexed) ->
+                DuplicateSongGroup(
+                    id = id,
+                    entries = indexed.map { DuplicateSongEntry(index = it.index, song = it.value) }
+                )
+            }
+    }
+
+    /**
+     * 忽略重复条目提示
+     */
+    fun dismissDuplicateDialog() {
+        _uiState.update { it.copy(showDuplicateDialog = false) }
+    }
+
+    /**
+     * 删除指定位置的重复条目（仅移除 JSON 条目，不删除乐曲文件夹），完成后刷新列表
+     */
+    fun deleteDuplicateEntry(index: Int) {
+        val directoryUri = currentDirectoryUri ?: return
+        _uiState.update { it.copy(showDuplicateDialog = false) }
+
+        viewModelScope.launch {
+            val success = songlistRepository.deleteSongEntryAt(directoryUri, index)
+            if (success) {
+                hasLoaded = false
+                loadSongs(directoryUri)
+            } else {
+                _uiState.update { it.copy(error = "删除重复条目失败") }
+            }
+        }
     }
 
     /**

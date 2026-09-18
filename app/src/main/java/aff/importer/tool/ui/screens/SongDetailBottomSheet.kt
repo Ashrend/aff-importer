@@ -715,6 +715,27 @@ private fun DifficultyEditor(
             }
         }
         
+        // 难度别名（仅 BYD 支持，ratingClassAlias=1 时为 Inscribed 难度）
+        if (difficulty.ratingClass == 3) {
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        val newAlias = if (difficulty.ratingClassAlias == 1) 0 else 1
+                        onUpdate(difficulty.copy(ratingClassAlias = newAlias))
+                    }
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = difficulty.ratingClassAlias == 1,
+                    onCheckedChange = {
+                        onUpdate(difficulty.copy(ratingClassAlias = if (it) 1 else 0))
+                    }
+                )
+                Text("Inscribed 难度 (ratingClassAlias)")
+            }
+        }
+        
         // 隐藏选项（PST/PRS/FTR 也支持 hidden_until）
         if (difficulty.ratingClass <= 2) {
             HiddenUntilDropdown(
