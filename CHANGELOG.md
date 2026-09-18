@@ -1,6 +1,21 @@
 # Changelog
 
-## [1.3.0] - 2025-05-31
+## [1.2.3] - 2026-09-18
+
+### Added
+- 重复条目检测与清理（曲目）：加载曲目列表时自动检测 songlist 中重复 ID 的条目并弹窗告知，可选择删除指定条目；仅移除 JSON 条目、保留乐曲文件夹，修改前自动备份
+- 重复条目检测与清理（曲包）：曲包列表同样支持重复条目检测与逐条清理
+- 曲目导入防重：导入谱面包时若 songlist 已存在相同 ID，仅更新文件并跳过条目追加，操作日志给出提示
+- 新建曲包：曲包管理页右下角新增"新建曲包"按钮与编辑弹窗，支持填写完整元数据；ID 已存在时阻止创建并提示更换
+- 支持 `ratingClassAlias` 字段（BYD 难度别名，即 Inscribed）：可在难度编辑器中勾选设置，卡片徽章以深蓝色显示以区别 Past
+
+### Fixed
+- 修复曲目列表滑动到底部时的崩溃：网格项 key 改为索引复合的唯一键，兼容含重复条目的 songlist
+
+### Changed
+- 新建曲包弹窗中 ID 为空时禁用保存按钮
+
+## [1.2.2] - 2026-05-31
 
 ### Added
 - 曲绘/横幅图片格式验证：自动跳过被改后缀的损坏文件，避免 Coil 解码崩溃
@@ -27,6 +42,3 @@
 - **`PacklistScreen` 底部空白**：Column modifier 误用外层参数 `modifier` 导致底部导航栏 padding 重复计算
 - `SongDetailBottomSheet` 中 `CircularProgressIndicator` 缺少尺寸约束
 - `ImportScreen` 中 `LogDisplay` 使用 `weight(1f)` 于滚动容器内
-
-### Removed
-- `PROJECT_DOCUMENTATION.md`（由 AGENTS.md 替代）
