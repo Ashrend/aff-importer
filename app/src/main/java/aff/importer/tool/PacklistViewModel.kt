@@ -2,39 +2,30 @@ package aff.importer.tool
 
 import android.app.Application
 import android.net.Uri
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import aff.importer.tool.data.PacklistAddResult
 import aff.importer.tool.data.PacklistRepository
 import aff.importer.tool.data.model.DuplicatePackEntry
 import aff.importer.tool.data.model.DuplicatePackGroup
+import aff.importer.tool.data.ArtworkRepository
+import aff.importer.tool.data.ArtworkStateStore
+import aff.importer.tool.data.PacklistRepository
+import aff.importer.tool.data.model.ArtworkKind
+import aff.importer.tool.data.model.ArtworkScanState
 import aff.importer.tool.data.model.Pack
 import aff.importer.tool.data.model.PacklistUiState
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.launch
 
 /**
  * Packlist 管理界面的 ViewModel（精简版）
  */
-@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class PacklistViewModel(application: Application) : AndroidViewModel(application) {
-
-    companion object {
-        private const val TAG = "PacklistViewModel"
-        private const val MAX_CONCURRENT_LOADS = 4
-    }
 
     private val packlistRepository = PacklistRepository(application)
 
@@ -43,16 +34,33 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
 
     private var currentDirectoryUri: Uri? = null
     private var hasLoaded = false
-
-    // 横幅 URI 缓存（线程安全）
-    private val bannerUris = ConcurrentHashMap<String, Uri?>()
-
-    // 正在进行的加载任务（线程安全）
-    private val activeLoads = ConcurrentHashMap<String, Job>()
-    private var backgroundLoadJob: Job? = null
     private var currentListLoadJob: Job? = null
 
-    private val loadDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_LOADS)
+    /**
+     * 封面扫描编排：负责目录索引、优先级队列与应用内缓存落盘。
+     * 它内部自带 IO 线程池，ViewModel 只负责发请求，不阻塞主线程。
+     */
+    private val artworkRepository = ArtworkRepository(application, viewModelScope, ArtworkKind.PACK_BANNER)
+
+    /**
+     * 每个曲包一个 Compose 状态：写入某个 id 只会让读取它的那个卡片重组。
+     * 状态实例一旦建立就不能替换，否则 UI 观察不到后续更新。
+     */
+    private val artworkStates = ArtworkStateStore<Uri>()
+
+    /**
+     * 封面扫描进度，独立于列表状态，进度变化不会让整个网格重组。
+     */
+    val artworkScanState: StateFlow<ArtworkScanState> = artworkRepository.scanState
+
+    init {
+        // 串行消费扫描结果：viewModelScope 跑在主线程，写入天然串行
+        viewModelScope.launch {
+            artworkRepository.results.collect { result ->
+                artworkStates.set(result.id, result.uri)
+            }
+        }
+    }
 
     /**
      * 加载曲包列表（带缓存）
@@ -69,13 +77,8 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
 
         currentDirectoryUri = directoryUri
 
-        // 清理所有旧任务与缓存
+        // 只取消上一次未完成的列表加载；封面状态槽要保留，替换实例会让 UI 收不到更新
         currentListLoadJob?.cancel()
-        backgroundLoadJob?.cancel()
-        backgroundLoadJob = null
-        activeLoads.values.forEach { it.cancel() }
-        activeLoads.clear()
-        bannerUris.clear()
 
         _uiState.update { it.copy(isLoading = true, error = null) }
 
@@ -83,6 +86,12 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
             try {
                 val packs = packlistRepository.getAllPacks(directoryUri)
                 val duplicateGroups = detectDuplicateGroups(packs)
+
+                // 封面状态槽必须在列表发布给 UI 之前准备好：
+                // UI 读到不存在的状态就没有可观察的对象，之后图片永远不会出现
+                val packIds = packs.map { it.id }
+                artworkStates.retainOnly(packIds)   // 丢弃旧目录的条目（id 相同的会保留，UI 观察不失效）
+                artworkStates.prepare(packIds)      // 为新条目建立状态槽
 
                 _uiState.update {
                     it.copy(
@@ -94,6 +103,9 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                         showDuplicateDialog = duplicateGroups.isNotEmpty()
                     )
                 }
+
+                // 列表已经发布给 UI，再请求扫描封面
+                artworkRepository.requestScan(directoryUri, packIds)
 
                 hasLoaded = true
             } catch (e: Exception) {
@@ -117,126 +129,34 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * 获取曲包横幅 URI
+     * 获取某个曲包的封面 URI。
+     *
+     * 必须在 composable 调用栈内读取，Compose 才会记录这次读取，
+     * 之后写入新值时该卡片才会重组。
      */
-    fun getBannerUri(pack: Pack): Uri? {
-        return bannerUris[pack.id]
+    fun artworkUriFor(packId: String): Uri? = artworkStates.valueFor(packId)
+
+    /**
+     * 把当前可见的曲包插到扫描队列前面，让可见项先出图
+     */
+    fun prioritizeArtworks(ids: List<String>) {
+        if (ids.isEmpty()) return
+        artworkRepository.requestPrioritize(ids)
     }
 
     /**
-     * 更新可见区域 - 由 UI 层在滚动时调用
+     * 强制刷新封面
+     *
+     * 注意：这里不能调用 artworkStates.clear()，
+     * clear() 会丢弃状态实例，而 UI 观察的是实例而不是值，
+     * 重建实例后刷新出来的图片就再也显示不出来。
+     * 刷新时旧的 Uri 先继续显示，新扫描结果逐个覆盖即可。
      */
-    fun updateVisibleItems(
-        visibleItemIds: List<String>,
-        preloadItemIds: List<String> = emptyList()
-    ) {
+    fun refreshArtworks() {
         val directoryUri = currentDirectoryUri ?: return
-        val allPacks = _uiState.value.packs
-
-        val packMap = allPacks.associateBy { it.id }
-
-        // 1. 取消不在可见或预加载范围内的任务
-        val keepIds = (visibleItemIds + preloadItemIds).toSet()
-        activeLoads.keys.toList().forEach { id ->
-            if (id !in keepIds) {
-                activeLoads.remove(id)?.cancel()
-            }
-        }
-
-        // 2. 优先加载可见项
-        visibleItemIds.forEach { id ->
-            val pack = packMap[id] ?: return@forEach
-
-            if (bannerUris.containsKey(pack.id)) return@forEach
-
-            activeLoads[pack.id]?.cancel()
-
-            val job = viewModelScope.launch(loadDispatcher) {
-                try {
-                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id, pack.type)
-                    bannerUris[pack.id] = uri
-
-                    withContext(Dispatchers.Main) {
-                        _uiState.update { it.copy() }
-                    }
-                } catch (e: CancellationException) {
-                    // 正常取消，忽略
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to load banner for ${pack.id}", e)
-                } finally {
-                    activeLoads.remove(pack.id)
-                }
-            }
-            activeLoads[pack.id] = job
-        }
-
-        // 3. 预加载屏幕外附近的项（低优先级）
-        preloadItemIds.forEach { id ->
-            if (id in visibleItemIds) return@forEach
-
-            val pack = packMap[id] ?: return@forEach
-
-            if (bannerUris.containsKey(pack.id) || activeLoads.containsKey(pack.id)) return@forEach
-
-            val job = viewModelScope.launch(loadDispatcher) {
-                delay(100)
-
-                try {
-                    if (!isActive) return@launch
-
-                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id, pack.type)
-                    bannerUris[pack.id] = uri
-
-                    withContext(Dispatchers.Main) {
-                        _uiState.update { it.copy() }
-                    }
-                } catch (e: CancellationException) {
-                    // 正常取消
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to preload banner for ${pack.id}", e)
-                } finally {
-                    activeLoads.remove(pack.id)
-                }
-            }
-            activeLoads[pack.id] = job
-        }
-    }
-
-    /**
-     * 启动后台加载服务
-     */
-    fun startBackgroundLoading() {
-        val directoryUri = currentDirectoryUri ?: return
-        val allPacks = _uiState.value.packs
-
-        if (backgroundLoadJob?.isActive == true) return
-
-        backgroundLoadJob = viewModelScope.launch(loadDispatcher) {
-            allPacks.forEach { pack ->
-                if (bannerUris.containsKey(pack.id) || activeLoads.containsKey(pack.id)) {
-                    return@forEach
-                }
-
-                try {
-                    val uri = packlistRepository.getPackBannerUri(directoryUri, pack.id, pack.type)
-                    bannerUris[pack.id] = uri
-
-                    if (bannerUris.size % 10 == 0) {
-                        withContext(Dispatchers.Main) {
-                            _uiState.update { it.copy() }
-                        }
-                    }
-
-                    delay(20)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Background banner load failed for ${pack.id}", e)
-                }
-            }
-
-            withContext(Dispatchers.Main) {
-                _uiState.update { it.copy() }
-            }
-        }
+        val packIds = _uiState.value.allPacks.map { it.id }
+        artworkStates.prepare(packIds)
+        artworkRepository.requestRefresh(directoryUri, packIds)
     }
 
     /**
@@ -348,7 +268,9 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
             val success = packlistRepository.deletePack(directoryUri, packToDelete.id)
 
             if (success) {
-                bannerUris.remove(packToDelete.id)
+                // 曲包已删除，丢弃它的封面状态与缓存文件
+                artworkStates.remove(packToDelete.id)
+                artworkRepository.remove(packToDelete.id)
 
                 _uiState.update { state ->
                     val updatedAllPacks = state.allPacks.filter { it.id != packToDelete.id }

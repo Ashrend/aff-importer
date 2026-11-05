@@ -3,6 +3,7 @@ package aff.importer.tool.ui.screens
 import aff.importer.tool.R
 import aff.importer.tool.PacklistViewModel
 import aff.importer.tool.data.model.DuplicatePackGroup
+import aff.importer.tool.data.model.ArtworkScanState
 import aff.importer.tool.data.model.Pack
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -40,6 +42,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -58,6 +61,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
@@ -69,14 +77,58 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+
+/**
+ * 曲包封面占位图标。
+ *
+ * material-icons-core 里没有 Image 图标（它属于 material-icons-extended），
+ * 而本项目不引入额外依赖，因此按 Material 的图片图标造型在这里自建一个。
+ * （与曲目页 SonglistScreen.kt 中的同名私有图标一致，两者互不影响。）
+ */
+private val ImagePlaceholderIcon: ImageVector = ImageVector.Builder(
+    name = "ImagePlaceholder",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f
+).apply {
+    path(
+        fill = SolidColor(Color.Black),
+        pathFillType = PathFillType.EvenOdd
+    ) {
+        // 外框
+        moveTo(3f, 5f)
+        lineTo(21f, 5f)
+        lineTo(21f, 19f)
+        lineTo(3f, 19f)
+        close()
+        // 内框：EvenOdd 挖空后形成边框
+        moveTo(5f, 7f)
+        lineTo(5f, 17f)
+        lineTo(19f, 17f)
+        lineTo(19f, 7f)
+        close()
+        // 山峰
+        moveTo(6f, 17f)
+        lineTo(10f, 12.5f)
+        lineTo(13f, 15.5f)
+        lineTo(15.5f, 13.5f)
+        lineTo(18f, 17f)
+        close()
+        // 太阳
+        moveTo(15.5f, 8.5f)
+        lineTo(16.5f, 9.5f)
+        lineTo(15.5f, 10.5f)
+        lineTo(14.5f, 9.5f)
+        close()
+    }
+}.build()
 
 /**
  * Packlist 管理主界面
  */
-@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PacklistScreen(
     directoryUri: Uri?,
@@ -84,6 +136,8 @@ fun PacklistScreen(
     viewModel: PacklistViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    // 扫描进度单独订阅：它变化时只重组进度条，不会带动整个网格
+    val artworkState by viewModel.artworkScanState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val lazyGridState = rememberLazyGridState()
@@ -94,41 +148,18 @@ fun PacklistScreen(
         viewModel.loadPacks(directoryUri)
     }
 
-    // 监听滚动状态，优先加载可见区域的横幅
+    // 上报可见区间，让扫描队列优先处理当前看得见的曲包
+    // 这里不能加 debounce：可见区间在滚动时每帧都在变，防抖会让整段滚动期间都不出图
     LaunchedEffect(lazyGridState, uiState.packs) {
         if (uiState.packs.isEmpty()) return@LaunchedEffect
 
         snapshotFlow {
-            lazyGridState.layoutInfo.visibleItemsInfo.map { uiState.packs.getOrNull(it.index)?.id }.filterNotNull()
+            lazyGridState.layoutInfo.visibleItemsInfo
+                .map { uiState.packs.getOrNull(it.index)?.id }
+                .filterNotNull()
         }
             .distinctUntilChanged()
-            .debounce(50)
-            .collect { visibleIds ->
-                val packs = uiState.packs
-                val visibleIndices = lazyGridState.layoutInfo.visibleItemsInfo.map { it.index }
-                val firstVisible = visibleIndices.minOrNull() ?: 0
-                val lastVisible = visibleIndices.maxOrNull() ?: 0
-
-                val preloadStart = (firstVisible - 20).coerceAtLeast(0)
-                val preloadEnd = (lastVisible + 20).coerceAtMost(packs.size - 1)
-                val preloadIds = packs.subList(preloadStart, preloadEnd + 1).map { it.id }
-
-                viewModel.updateVisibleItems(
-                    visibleItemIds = visibleIds,
-                    preloadItemIds = preloadIds
-                )
-            }
-    }
-
-    // 监听滚动停止，启动后台加载
-    LaunchedEffect(lazyGridState) {
-        snapshotFlow { lazyGridState.isScrollInProgress }
-            .distinctUntilChanged()
-            .collect { isScrolling ->
-                if (!isScrolling) {
-                    viewModel.startBackgroundLoading()
-                }
-            }
+            .collect { viewModel.prioritizeArtworks(it) }
     }
 
     // 显示错误提示
@@ -167,7 +198,16 @@ fun PacklistScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                ),
+                actions = {
+                    IconButton(
+                        onClick = {
+                            if (directoryUri != null) viewModel.refreshArtworks()
+                        }
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新封面")
+                    }
+                }
             )
         },
         floatingActionButton = {
@@ -194,6 +234,9 @@ fun PacklistScreen(
                     .fillMaxWidth()
                     .padding(16.dp)
             )
+
+            // 封面扫描进度（只订阅进度，不影响网格）
+            ArtworkScanProgress(state = artworkState)
 
             // 内容区域
             when {
@@ -236,11 +279,14 @@ fun PacklistScreen(
                     ) {
                         itemsIndexed(
                             items = packs,
+                            // 重复条目可能存在同名 id，所以 key 里带上序号保证唯一
                             key = { index, pack -> "${pack.id}#$index" }
                         ) { _, pack ->
+                            // 封面 Uri 在条目自己的 composable 作用域里读取，
+                            // 这样写入新值时只会重组这一张卡片
                             PackCard(
                                 pack = pack,
-                                bannerUri = viewModel.getBannerUri(pack),
+                                bannerUri = viewModel.artworkUriFor(pack.id),
                                 onClick = { viewModel.selectPack(pack) },
                                 onDelete = { viewModel.showDeleteConfirm(pack) }
                             )
@@ -300,6 +346,34 @@ fun PacklistScreen(
 }
 
 /**
+ * 封面扫描进度条。
+ *
+ * 只订阅扫描进度这个独立的状态流：进度变化时只重组这里，
+ * 不会带着整个网格一起重组。
+ */
+@Composable
+private fun ArtworkScanProgress(state: ArtworkScanState) {
+    when (state) {
+        is ArtworkScanState.Scanning -> {
+            val progress = if (state.total > 0) state.completed.toFloat() / state.total else 0f
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                LinearProgressIndicator(progress = { progress })
+                Text(
+                    text = "正在加载封面 ${state.completed}/${state.total}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        else -> Unit
+    }
+}
+
+/**
  * 曲包卡片
  */
 @Composable
@@ -311,6 +385,19 @@ private fun PackCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+
+    // 图片请求记忆化：避免每次重组都重新构建请求对象
+    val imageRequest = remember(pack.id, bannerUri) {
+        bannerUri?.let { uri ->
+            ImageRequest.Builder(context)
+                .data(uri)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                // 曲包封面是横幅（512x256），按横幅尺寸解码；
+                // 用正方形尺寸会在 ContentScale.Crop 下裁掉左右两侧
+                .size(512, 256)
+                .build()
+        }
+    }
 
     Card(
         modifier = modifier
@@ -328,18 +415,22 @@ private fun PackCard(
                     .height(220.dp)
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
             ) {
-                bannerUri?.let { uri ->
+                imageRequest?.let {
                     AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(uri)
-                            .crossfade(50)
-                            .memoryCachePolicy(CachePolicy.ENABLED)
-                            .diskCachePolicy(CachePolicy.ENABLED)
-                            .size(256, 256)
-                            .build(),
+                        model = it,
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
+                    )
+                }
+
+                // 封面还没准备好时显示占位图标，避免整块留白看起来像加载失败
+                if (imageRequest == null) {
+                    Icon(
+                        imageVector = ImagePlaceholderIcon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                        modifier = Modifier.align(Alignment.Center)
                     )
                 }
 
