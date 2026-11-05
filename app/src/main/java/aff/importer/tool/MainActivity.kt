@@ -4,11 +4,14 @@ import aff.importer.tool.ui.screens.ImportScreen
 import aff.importer.tool.ui.screens.PacklistScreen
 import aff.importer.tool.ui.screens.SonglistScreen
 import aff.importer.tool.ui.theme.ArcaeaImporterTheme
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -30,7 +33,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.core.view.WindowCompat
 
 /**
  * 主 Activity - 单 Activity 架构，带底部导航
@@ -44,8 +46,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        WindowCompat.setDecorFitsSystemWindows(window, true)
-        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        // 全面屏：内容延伸到状态栏与手势导航条区域，由各组件自行按 inset 避让
+        enableEdgeToEdge()
+        enableDisplayCutout()
         
         setContent {
             ArcaeaImporterTheme {
@@ -59,6 +62,19 @@ class MainActivity : ComponentActivity() {
                         packlistViewModel = packlistViewModel
                     )
                 }
+            }
+        }
+    }
+
+    /**
+     * 刘海 / 挖孔区域：允许内容绘制进刘海（横屏时不留黑边）。
+     * LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES 需要 API 28。
+     */
+    private fun enableDisplayCutout() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
     }
@@ -89,6 +105,9 @@ private fun MainScreen(
     }
 
     Scaffold(
+        // 内容区的 inset 由内层页面的 TopAppBar 与本层的 NavigationBar 各自负责，
+        // 这里再叠一遍会让状态栏高度与导航栏高度各被量两次
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             NavigationBar {
                 items.forEachIndexed { index, item ->

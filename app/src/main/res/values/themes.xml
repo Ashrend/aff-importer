@@ -1,3 +1,11 @@
 <resources>
-    <style name="Theme.ArcaeaImporter" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+        Compose 应用的窗口主题只负责启动瞬间的窗口背景与系统栏初值；
+        系统栏的实际样式由 MainActivity 的 enableEdgeToEdge() 接管。
+    -->
+    <style name="Theme.ArcaeaImporter" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

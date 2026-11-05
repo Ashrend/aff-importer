@@ -1,0 +1,8 @@
+<resources>
+    <!-- 深色模式：窗口主题跟随系统，避免启动瞬间白闪 -->
+    <style name="Theme.ArcaeaImporter" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
