@@ -1,9 +1,9 @@
 # Gradle
 .gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
+
+# Kotlin 编译会话数据
+.kotlin/
 
 # 本地配置（含 SDK 路径等机器相关信息）
 local.properties
@@ -29,9 +29,9 @@ output.json
 keystore.properties
 signing.properties
 google-services.json
-# 发布签名目录：密钥库与口令文件都不入库，只保留说明文件
-keystore/*
-!keystore/README.md
+# 发布签名目录：整个目录不入库（密钥库、口令、说明文件都不入库）
+# 生成方法见仓库根目录 README.md 的「发布签名」一节
+keystore/
 
 # AI 助手产物（不属于应用源码，不入库）
 AGENTS.md
