@@ -52,4 +52,12 @@ class ArtworkCachePathsTest {
         assertEquals(File(cacheDir, "artwork/songs/gen-2/my_song.jpg"), f)
         assertTrue(f.name.endsWith(".jpg"))
     }
+
+    @Test
+    fun `代次目录名严格是 gen 前缀加数字`() {
+        val cacheDir = temp.newFolder("cache")
+        val dir = ArtworkCachePaths.generationDir(cacheDir, "packs", 12)
+        assertEquals("gen-12", dir.name)
+        assertTrue(dir.parentFile?.name == "packs")
+    }
 }
