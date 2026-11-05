@@ -522,6 +522,9 @@ class ArtworkRepository(
                     children.add(ChildDocument(documentId, name, mimeType))
                 }
             }
+        } catch (e: CancellationException) {
+            // 协程被取消不是错误，直接向上抛
+            throw e
         } catch (e: Exception) {
             // 单层列举失败就当作这一层没有内容，不影响其它层
             Log.e(TAG, "列举子文档失败: $childrenUri", e)
