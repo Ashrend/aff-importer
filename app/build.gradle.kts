@@ -80,6 +80,31 @@ android {
     }
 }
 
+/**
+ * APK 产物收集到仓库根目录的 bin/，方便直接取用（bin/ 已被 .gitignore 排除）。
+ *
+ * 结果是 bin/app-debug.apk 与 bin/app-release.apk。
+ *
+ * 为什么不直接把 AGP 的打包输出目录改成 bin/：AGP 8.x 没有公开 API 支持改打包输出目录，
+ * 强行改会和它内部的「APK 列表文件重定向」任务冲突 —— 那个任务指向的 output-metadata.json
+ * 路径在任务创建时就被写死并 finalize 了，改不动。所以让 AGP 照常产出，再复制一份到 bin/。
+ */
+val collectApk by tasks.registering(Copy::class) {
+    group = "build"
+    description = "把 APK 产物复制到仓库根目录的 bin/"
+    from(layout.buildDirectory.dir("outputs/apk/debug")) {
+        include("*.apk")
+    }
+    from(layout.buildDirectory.dir("outputs/apk/release")) {
+        include("*.apk")
+    }
+    into(rootProject.layout.projectDirectory.dir("bin"))
+}
+
+tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }.configureEach {
+    finalizedBy(collectApk)
+}
+
 dependencies {
     // Core Android
     implementation("androidx.core:core-ktx:1.13.1")

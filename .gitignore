@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# APK 构建输出（app/build.gradle.kts 把打包产物输出到这里）
+bin/
+
 # Kotlin 编译会话数据
 .kotlin/
 
