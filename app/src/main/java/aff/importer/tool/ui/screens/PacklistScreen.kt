@@ -537,9 +537,6 @@ private fun SearchBar(
 }
 
 /**
- * 空状态提示
- */
-/**
  * 删除确认对话框
  */
 @Composable
@@ -574,6 +571,9 @@ private fun DeleteConfirmDialog(
     )
 }
 
+/**
+ * 空状态提示
+ */
 @Composable
 private fun EmptyState(
     message: String,

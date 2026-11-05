@@ -264,7 +264,7 @@ fun SonglistScreen(
                         contentPadding = PaddingValues(16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
-                        // 关键优化：预加载屏幕外的项，避免滑动时白屏
+                        // 曲绘由后台扫描逐个填充，当前可见的曲目会被插到队首优先解析
                         modifier = Modifier.weight(1f)
                     ) {
                         itemsIndexed(
