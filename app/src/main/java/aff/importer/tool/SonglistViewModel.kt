@@ -14,6 +14,7 @@ import aff.importer.tool.data.model.ArtworkKind
 import aff.importer.tool.data.model.ArtworkScanState
 import aff.importer.tool.data.model.Song
 import aff.importer.tool.data.model.SonglistUiState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -119,6 +120,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                 artworkRepository.requestScan(directoryUri, folderIds)
 
                 hasLoaded = true
+            } catch (e: CancellationException) {
+                // 协程被取消（ViewModel 销毁、切换目录重新加载）不是加载失败
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load songs", e)
                 _uiState.update {

@@ -225,10 +225,13 @@ class ArtworkRepository(
     /**
      * 把仍在队列中的 id 前插，让当前可见的条目先出图。
      * 不取消任何已排队的任务。
+     *
+     * 前插是 O(N) 的过滤 + 重建（最多两千多项），滚动时每次可见区间变化都会调用，
+     * 因此放到 Default 调度器上跑，绝不能占着主线程。
      */
     fun requestPrioritize(ids: List<String>) {
         if (ids.isEmpty()) return
-        jobScope.launch {
+        jobScope.launch(Dispatchers.Default) {
             mutex.withLock { queue.prioritize(ids) }
         }
     }
@@ -313,6 +316,9 @@ class ArtworkRepository(
                 ArtworkKind.SONG_JACKET -> buildSongFolderIndex(directoryUri)
                 ArtworkKind.PACK_BANNER -> buildPackBannerIndex(directoryUri)
             }
+        } catch (e: CancellationException) {
+            // 协程被取消不是错误，直接向上抛，别把扫描吞成「索引为空」
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "构建图片索引失败: $directoryUri", e)
             emptyMap()
@@ -543,7 +549,9 @@ class ArtworkRepository(
     private suspend fun markCompletedIfFinished() {
         var needPurge = false
         mutex.withLock {
-            if (queue.size != 0 || completed < total) return@withLock
+            // total 为 0 说明还没有任何一次扫描开始过（刚构造出来时的初始状态），
+            // 这时候报 Completed(0) 会让进度条显示成「已完成」的样子
+            if (total <= 0 || queue.size != 0 || completed < total) return@withLock
             _scanState.value = ArtworkScanState.Completed(total)
             if (purgePending) {
                 purgePending = false
