@@ -2,17 +2,17 @@ package aff.importer.tool
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import aff.importer.tool.data.PacklistAddResult
-import aff.importer.tool.data.PacklistRepository
-import aff.importer.tool.data.model.DuplicatePackEntry
-import aff.importer.tool.data.model.DuplicatePackGroup
 import aff.importer.tool.data.ArtworkRepository
 import aff.importer.tool.data.ArtworkStateStore
+import aff.importer.tool.data.PacklistAddResult
 import aff.importer.tool.data.PacklistRepository
 import aff.importer.tool.data.model.ArtworkKind
 import aff.importer.tool.data.model.ArtworkScanState
+import aff.importer.tool.data.model.DuplicatePackEntry
+import aff.importer.tool.data.model.DuplicatePackGroup
 import aff.importer.tool.data.model.Pack
 import aff.importer.tool.data.model.PacklistUiState
 import kotlinx.coroutines.CancellationException
@@ -27,6 +27,10 @@ import kotlinx.coroutines.launch
  * Packlist 管理界面的 ViewModel（精简版）
  */
 class PacklistViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        private const val TAG = "PacklistViewModel"
+    }
 
     private val packlistRepository = PacklistRepository(application)
 
@@ -411,15 +415,4 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /**
-     * 强制刷新所有横幅
-     */
-    fun clearBannerCache() {
-        bannerUris.clear()
-        activeLoads.values.forEach { it.cancel() }
-        activeLoads.clear()
-        backgroundLoadJob?.cancel()
-        backgroundLoadJob = null
-        _uiState.update { it.copy() }
-    }
 }
