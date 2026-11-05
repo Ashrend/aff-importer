@@ -20,6 +20,10 @@ import java.io.File
  *
  * 代次（generation）用于强制刷新：换一代次即换一套路径，
  * Coil 的缓存键（路径 + lastModified）随之改变，必然重新加载。
+ *
+ * 代次还承担「按目录隔离」的职责：缓存路径里没有目录维度，
+ * 因此目标目录一变就必须换代次，否则上一个目录里同名 id 的图片
+ * 会被当成当前目录的缓存命中（由 [ArtworkRepository] 在检测到目录切换时推进）。
  */
 class ArtworkCache(context: Context, val namespace: String) {
 
@@ -153,6 +157,10 @@ class ArtworkCache(context: Context, val namespace: String) {
     /**
      * 代次自增并返回新值。
      * 不删除旧代次目录：刷新过程中旧图仍然可用，等新扫描完成后再由 [purgeOtherGenerations] 清理。
+     *
+     * 两个调用方：
+     * - [ArtworkRepository.requestRefresh]：用户手动点刷新；
+     * - [ArtworkRepository] 检测到目标目录变化：让缓存按目录隔离。
      */
     fun advanceGeneration(): Int = synchronized(this) {
         generation = generation + 1

@@ -157,6 +157,9 @@ class ArtworkRepository(
     /**
      * 强制刷新：换缓存代次 → 全量重扫 → 扫描完成后清理旧代次目录。
      *
+     * 若目标目录同时发生了变化，[performScan] 还会再推进一次缓存代次，
+     * 跳过一代是无害的（旧代次目录随后会被清理）。
+     *
      * @param directoryUri 目标目录
      * @param ids 待解析的条目 id
      */
@@ -201,6 +204,9 @@ class ArtworkRepository(
     /**
      * 执行一次扫描：重建索引、重置进度、入队。
      *
+     * 目录发生变化时，缓存代次也会一起推进（见下面 [ArtworkCache.advanceGeneration]）：
+     * 缓存路径不带目录维度，不换代次就会把上一个目录的曲绘当成当前目录的曲绘。
+     *
      * @param purgeAfterScan 本批次完成后是否清理旧缓存代次目录
      */
     private suspend fun performScan(directoryUri: Uri, ids: List<String>, purgeAfterScan: Boolean) {
@@ -210,6 +216,14 @@ class ArtworkRepository(
                 currentDirectoryUri = directoryUri
                 generation++
                 queue.clear()
+
+                // 缓存路径里没有目录维度（cacheDir/artwork/<namespace>/gen-<N>/<id>.jpg），
+                // 目录一变就必须让缓存也换代次，否则两个目录里同名的 id
+                // 会命中上一个目录的缓存文件，屏幕上就会显示错曲绘。
+                cache.advanceGeneration()
+
+                // 旧代次里的图片已经作废，等本批扫描跑完再清理
+                purgePending = true
             }
 
             // 索引每次都重建（不只是目录变化时）：
