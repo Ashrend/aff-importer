@@ -2,8 +2,8 @@ package aff.importer.tool.data
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
-import androidx.documentfile.provider.DocumentFile
 import aff.importer.tool.data.model.ArtworkKind
 import aff.importer.tool.data.model.ArtworkScanState
 import kotlinx.coroutines.CancellationException
@@ -25,6 +25,38 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.math.min
 
 /**
+ * 索引里的一个 SAF 子文档。
+ *
+ * @param treeUri 所属的树 Uri（用户授权的目标目录）
+ * @param documentId 该子文档在树中的 document id
+ */
+private data class IndexedDocument(
+    val treeUri: Uri,
+    val documentId: String
+) {
+    /** 子文档自身的 Uri：content://<authority>/tree/<treeId>/document/<documentId> */
+    val uri: Uri
+        get() = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+
+    /** 子文档的子文档列表 Uri（列举这一层只需要一次查询） */
+    val childrenUri: Uri
+        get() = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+}
+
+/**
+ * 一次查询拿到的子文档信息。
+ *
+ * @param documentId 子文档 id
+ * @param name 显示名，可能为 null（提供方没给）
+ * @param mimeType MIME 类型，可能为 null（提供方没给）
+ */
+private data class ChildDocument(
+    val documentId: String,
+    val name: String?,
+    val mimeType: String?
+)
+
+/**
  * 单个条目的图片解析结果
  *
  * @param kind 图片种类（曲绘 / 曲包封面）
@@ -42,10 +74,15 @@ data class ArtworkResult(val kind: ArtworkKind, val id: String, val uri: Uri?)
  * 3. 解析结果落到应用内缓存（[ArtworkCache]），再以 file:// 交给 Coil 读取；
  * 4. 用 Channel 发布结果，由调用方串行消费，避免丢结果。
  *
+ * SAF 访问方式：全部走 [android.content.ContentResolver] 的投影查询，
+ * 一次查询同时拿到 document id、显示名与 MIME 类型。
+ * 不用 [androidx.documentfile.provider.DocumentFile] 是因为它的 getName()/isDirectory()
+ * 各自都会再发一次 ContentResolver 查询（旧实现因此是 2N+1 次）。
+ *
  * 线程约定：
  * - 队列、索引、当前目录、扫描代次、进度计数等共享状态，全部由 [mutex] 保护；
  * - [ArtworkPriorityQueue] 自身不加锁，锁由本类负责；
- * - SAF 查询是阻塞 IO，只允许出现在 worker 线程与 [buildIndex] 里。
+ * - SAF 查询是阻塞 IO，只允许出现在 worker 线程与 [buildIndex] 里，且 [buildIndex] 在锁外调用。
  *
  * @param context 应用上下文（内部只使用 applicationContext）
  * @param scope worker 与请求协程所属的作用域，ViewModel 销毁时随之取消
@@ -79,6 +116,16 @@ class ArtworkRepository(
 
         /** 曲包封面所在目录名 */
         private const val PACK_FOLDER_NAME = "pack"
+
+        /**
+         * 子文档查询的投影：一次拿到 id、显示名与 MIME 类型。
+         * 不做这一步的话，每个子文档都要单独查一次属性。
+         */
+        private val CHILD_PROJECTION = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
     }
 
     private val appContext: Context = context.applicationContext
@@ -103,7 +150,7 @@ class ArtworkRepository(
     private var generation = 0
 
     /** 当前目录的图片索引，整体替换，读时取不可变快照 */
-    private var index: Map<String, DocumentFile> = emptyMap()
+    private var index: Map<String, IndexedDocument> = emptyMap()
 
     /** 当前扫描的目录 */
     private var currentDirectoryUri: Uri? = null
@@ -117,7 +164,7 @@ class ArtworkRepository(
     /** 上次发布进度的时刻（毫秒），用于节流 */
     private var lastProgressAt = 0L
 
-    /** 是否需要在扫描完成后清理旧缓存代次目录（强制刷新时置位，清理后清除） */
+    /** 是否需要在扫描完成后清理旧缓存代次目录（强制刷新 / 目录切换时置位，清理后清除） */
     private var purgePending = false
 
     /** 结果通道：UNLIMITED 保证结果不丢，由调用方串行消费 */
@@ -210,8 +257,8 @@ class ArtworkRepository(
      * @param purgeAfterScan 本批次完成后是否清理旧缓存代次目录
      */
     private suspend fun performScan(directoryUri: Uri, ids: List<String>, purgeAfterScan: Boolean) {
+        // 1) 目录切换检测（锁内）：作废进行中的旧结果，并清空旧队列
         mutex.withLock {
-            // 目录切换：作废旧目录的进行中结果，并清空旧队列
             if (directoryUri != currentDirectoryUri) {
                 currentDirectoryUri = directoryUri
                 generation++
@@ -225,11 +272,18 @@ class ArtworkRepository(
                 // 旧代次里的图片已经作废，等本批扫描跑完再清理
                 purgePending = true
             }
+        }
 
+        // 2) 索引在锁外构建：SAF 查询是阻塞 IO，放在锁里会让所有 worker
+        //    和主线程发来的优先级请求一起排队
+        val newIndex = buildIndex(directoryUri)
+
+        // 3) 在锁内发布索引并入队
+        mutex.withLock {
             // 索引每次都重建（不只是目录变化时）：
             // remote_dl 改名会新增一个文件夹，目录没变但旧索引里没有这个 folderId，
             // 重建只需 1~2 次 SAF 查询，代价可忽略，换来「任何时候都能解析到当前实际存在的条目」。
-            index = buildIndex(directoryUri)
+            index = newIndex
 
             // 进度按批次计算，不是累计
             total = ids.size
@@ -248,10 +302,12 @@ class ArtworkRepository(
     /**
      * 构建当前目录的图片索引。
      *
-     * SONG_JACKET：key = 文件夹名（= 曲目的实际文件夹 id），value = 该曲目文件夹，1 次 SAF 查询。
-     * PACK_BANNER：key = pack id，value = 封面文件，2 次 SAF 查询。
+     * SONG_JACKET：key = 文件夹名（= 曲目的实际文件夹 id），value = 该曲目文件夹。
+     * PACK_BANNER：key = pack id，value = 封面文件。
+     *
+     * 每次构建只发 1 次（曲绘）或 2 次（曲包）SAF 查询。
      */
-    private suspend fun buildIndex(directoryUri: Uri): Map<String, DocumentFile> {
+    private suspend fun buildIndex(directoryUri: Uri): Map<String, IndexedDocument> {
         return try {
             when (kind) {
                 ArtworkKind.SONG_JACKET -> buildSongFolderIndex(directoryUri)
@@ -267,15 +323,16 @@ class ArtworkRepository(
      * 曲绘索引：一次列举根目录，得到「文件夹名 → 文件夹」。
      * 旧实现每个条目都要重新列举整个根目录，是 O(N²) 的 SAF 查询。
      */
-    private suspend fun buildSongFolderIndex(directoryUri: Uri): Map<String, DocumentFile> {
-        val root = DocumentFile.fromTreeUri(appContext, directoryUri) ?: return emptyMap()
-        val children = root.listFiles() ?: return emptyMap()
+    private suspend fun buildSongFolderIndex(directoryUri: Uri): Map<String, IndexedDocument> {
+        val children = queryChildren(rootChildrenUri(directoryUri))
 
-        val map = LinkedHashMap<String, DocumentFile>()
+        val map = LinkedHashMap<String, IndexedDocument>()
         for (child in children) {
-            if (!child.isDirectory) continue
+            // 只保留目录；MIME 类型不是目录的一律跳过
+            if (child.mimeType != DocumentsContract.Document.MIME_TYPE_DIR) continue
+            // 名字为空的条目没法当索引键，跳过
             val name = child.name ?: continue
-            map[name] = child
+            map[name] = IndexedDocument(directoryUri, child.documentId)
         }
         return map
     }
@@ -284,16 +341,22 @@ class ArtworkRepository(
      * 曲包封面索引：所有封面都在 pack 目录里，列举一次即可解析出全部 pack id。
      * 旧实现每个曲包都重新查找 pack 目录，是 O(P²) 的 SAF 查询。
      */
-    private suspend fun buildPackBannerIndex(directoryUri: Uri): Map<String, DocumentFile> {
-        val root = DocumentFile.fromTreeUri(appContext, directoryUri) ?: return emptyMap()
-        val packFolder = root.findFile(PACK_FOLDER_NAME) ?: return emptyMap()
-        val children = packFolder.listFiles() ?: return emptyMap()
+    private suspend fun buildPackBannerIndex(directoryUri: Uri): Map<String, IndexedDocument> {
+        // 第一次查询：根目录里找 pack 目录
+        val packFolder = queryChildren(rootChildrenUri(directoryUri)).firstOrNull {
+            it.name == PACK_FOLDER_NAME && it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+        } ?: return emptyMap()
 
-        val map = LinkedHashMap<String, DocumentFile>()
+        // 第二次查询：pack 目录下的封面文件
+        val children = queryChildren(IndexedDocument(directoryUri, packFolder.documentId).childrenUri)
+
+        val map = LinkedHashMap<String, IndexedDocument>()
         for (child in children) {
+            // 子目录不可能是封面
+            if (child.mimeType == DocumentsContract.Document.MIME_TYPE_DIR) continue
             val name = child.name ?: continue
             val packId = ArtworkFileRules.parsePackBannerId(name) ?: continue
-            map[packId] = child
+            map[packId] = IndexedDocument(directoryUri, child.documentId)
         }
         return map
     }
@@ -378,23 +441,25 @@ class ArtworkRepository(
      */
     private suspend fun resolveSongJacket(
         id: String,
-        indexSnapshot: Map<String, DocumentFile>
+        indexSnapshot: Map<String, IndexedDocument>
     ): Uri? {
         // 没有这个文件夹 → 该曲目不存在（可能已被删除或改名）
         val folder = indexSnapshot[id] ?: return null
 
-        val children = folder.listFiles() ?: return null
+        // 一次查询拿到这个曲目文件夹下的全部文件
+        val children = queryChildren(folder.childrenUri)
         val jacket = ArtworkFileRules.selectSongJacket(children.mapNotNull { it.name }) ?: return null
         val file = children.firstOrNull { it.name == jacket.fileName } ?: return null
+        val fileUri = DocumentsContract.buildDocumentUriUsingTree(folder.treeUri, file.documentId)
 
         // 缩略图本身就是 256px JPEG，直接复制字节；全尺寸图需要降采样转码
         val cached = if (jacket.isThumbnail) {
-            cache.copyToCache(id, file.uri)
+            cache.copyToCache(id, fileUri)
         } else {
-            cache.transcodeToCache(id, file.uri, SONG_JACKET_SIZE, SONG_JACKET_SIZE)
+            cache.transcodeToCache(id, fileUri, SONG_JACKET_SIZE, SONG_JACKET_SIZE)
         }
         // 落盘失败时回退到 SAF 的 content:// Uri：图片仍能显示，只是读取慢一些
-        return cached?.let { Uri.fromFile(it) } ?: file.uri
+        return cached?.let { Uri.fromFile(it) } ?: fileUri
     }
 
     /**
@@ -402,14 +467,60 @@ class ArtworkRepository(
      */
     private suspend fun resolvePackBanner(
         id: String,
-        indexSnapshot: Map<String, DocumentFile>
+        indexSnapshot: Map<String, IndexedDocument>
     ): Uri? {
         val file = indexSnapshot[id] ?: return null
+        val fileUri = file.uri
 
         // 封面是横幅，按 512x256 转码
-        val cached = cache.transcodeToCache(id, file.uri, PACK_BANNER_WIDTH, PACK_BANNER_HEIGHT)
+        val cached = cache.transcodeToCache(id, fileUri, PACK_BANNER_WIDTH, PACK_BANNER_HEIGHT)
         // 落盘失败时回退到 SAF 的 content:// Uri
-        return cached?.let { Uri.fromFile(it) } ?: file.uri
+        return cached?.let { Uri.fromFile(it) } ?: fileUri
+    }
+
+    /**
+     * 树根目录下的子文档列表 Uri。
+     */
+    private fun rootChildrenUri(treeUri: Uri): Uri =
+        DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri)
+        )
+
+    /**
+     * 列举一层子文档：一次 ContentResolver 查询，同时拿到 id、显示名与 MIME 类型。
+     *
+     * 旧实现用 DocumentFile：listFiles() 只查 document_id，
+     * 之后每个子文档的 getName() 与 isDirectory() 各自再发一次查询，2N+1 次。
+     * 这里一次投影查询就把属性全部拿到。
+     */
+    private fun queryChildren(childrenUri: Uri): List<ChildDocument> {
+        val children = ArrayList<ChildDocument>()
+        try {
+            appContext.contentResolver.query(
+                childrenUri,
+                CHILD_PROJECTION,
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                // 没有 id 就没法定位文档，整批放弃
+                if (idIndex < 0) return@use
+                while (cursor.moveToNext()) {
+                    val documentId = cursor.getString(idIndex) ?: continue
+                    val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
+                    val mimeType = if (mimeIndex >= 0) cursor.getString(mimeIndex) else null
+                    children.add(ChildDocument(documentId, name, mimeType))
+                }
+            }
+        } catch (e: Exception) {
+            // 单层列举失败就当作这一层没有内容，不影响其它层
+            Log.e(TAG, "列举子文档失败: $childrenUri", e)
+        }
+        return children
     }
 
     /**
