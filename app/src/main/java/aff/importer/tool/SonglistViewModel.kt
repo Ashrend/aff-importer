@@ -5,34 +5,29 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import aff.importer.tool.data.ArtworkRepository
+import aff.importer.tool.data.ArtworkStateStore
 import aff.importer.tool.data.SonglistRepository
 import aff.importer.tool.data.model.DuplicateSongEntry
 import aff.importer.tool.data.model.DuplicateSongGroup
+import aff.importer.tool.data.model.ArtworkKind
+import aff.importer.tool.data.model.ArtworkScanState
 import aff.importer.tool.data.model.Song
 import aff.importer.tool.data.model.SonglistUiState
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.launch
 
 /**
- * Songlist 管理界面的 ViewModel（精简版）
+ * Songlist 管理界面的 ViewModel
  */
-@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class SonglistViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "SonglistViewModel"
-        private const val MAX_CONCURRENT_LOADS = 4
     }
 
     private val songlistRepository = SonglistRepository(application)
@@ -42,16 +37,33 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
 
     private var currentDirectoryUri: Uri? = null
     private var hasLoaded = false
-
-    // 曲绘 URI 缓存（线程安全）
-    private val jacketUris = ConcurrentHashMap<String, Uri>()
-
-    // 正在进行的加载任务（线程安全）
-    private val activeLoads = ConcurrentHashMap<String, Job>()
-    private var backgroundLoadJob: Job? = null
     private var currentListLoadJob: Job? = null
 
-    private val loadDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_LOADS)
+    /**
+     * 曲绘扫描编排：负责目录索引、优先级队列与应用内缓存落盘。
+     * 它内部自带 IO 线程池，ViewModel 只负责发请求，不阻塞主线程。
+     */
+    private val artworkRepository = ArtworkRepository(application, viewModelScope, ArtworkKind.SONG_JACKET)
+
+    /**
+     * 每个曲目一个 Compose 状态：写入某个 id 只会让读取它的那个卡片重组。
+     * 状态实例一旦建立就不能替换，否则 UI 观察不到后续更新。
+     */
+    private val artworkStates = ArtworkStateStore<Uri>()
+
+    /**
+     * 曲绘扫描进度，独立于列表状态，进度变化不会让整个网格重组。
+     */
+    val artworkScanState: StateFlow<ArtworkScanState> = artworkRepository.scanState
+
+    init {
+        // 串行消费扫描结果：viewModelScope 跑在主线程，写入天然串行
+        viewModelScope.launch {
+            artworkRepository.results.collect { result ->
+                artworkStates.set(result.id, result.uri)
+            }
+        }
+    }
 
     /**
      * 强制刷新歌曲列表
@@ -76,13 +88,8 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
 
         currentDirectoryUri = directoryUri
 
-        // 清理所有旧任务与缓存
+        // 只取消上一次未完成的列表加载；曲绘状态槽要保留，替换实例会让 UI 收不到更新
         currentListLoadJob?.cancel()
-        backgroundLoadJob?.cancel()
-        backgroundLoadJob = null
-        activeLoads.values.forEach { it.cancel() }
-        activeLoads.clear()
-        jacketUris.clear()
 
         _uiState.update { it.copy(isLoading = true, error = null) }
 
@@ -90,6 +97,12 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
             try {
                 val songs = songlistRepository.getAllSongs(directoryUri)
                 val duplicateGroups = detectDuplicateGroups(songs)
+
+                // 曲绘状态槽必须在列表发布给 UI 之前准备好：
+                // UI 读到不存在的状态就没有可观察的对象，之后图片永远不会出现
+                val folderIds = songs.map { it.getActualFolderId() }
+                artworkStates.retainOnly(folderIds)   // 丢弃旧目录的条目（id 相同的会保留，UI 观察不失效）
+                artworkStates.prepare(folderIds)      // 为新条目建立状态槽
 
                 _uiState.update {
                     it.copy(
@@ -101,6 +114,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                         showDuplicateDialog = duplicateGroups.isNotEmpty()
                     )
                 }
+
+                // 列表已经发布给 UI，再请求扫描曲绘
+                artworkRepository.requestScan(directoryUri, folderIds)
 
                 hasLoaded = true
             } catch (e: Exception) {
@@ -116,10 +132,34 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * 获取曲绘 URI
+     * 获取某个曲目文件夹的曲绘 URI。
+     *
+     * 必须在 composable 调用栈内读取，Compose 才会记录这次读取，
+     * 之后写入新值时该卡片才会重组。
      */
-    fun getJacketUri(song: Song): Uri? {
-        return jacketUris[song.getActualFolderId()]
+    fun artworkUriFor(folderId: String): Uri? = artworkStates.valueFor(folderId)
+
+    /**
+     * 把当前可见的曲目插到扫描队列前面，让可见项先出图
+     */
+    fun prioritizeArtworks(ids: List<String>) {
+        if (ids.isEmpty()) return
+        artworkRepository.requestPrioritize(ids)
+    }
+
+    /**
+     * 强制刷新曲绘
+     *
+     * 注意：这里不能调用 artworkStates.clear()，
+     * clear() 会丢弃状态实例，而 UI 观察的是实例而不是值，
+     * 重建实例后刷新出来的图片就再也显示不出来。
+     * 刷新时旧的 Uri 先继续显示，新扫描结果逐个覆盖即可。
+     */
+    fun refreshArtworks() {
+        val directoryUri = currentDirectoryUri ?: return
+        val folderIds = _uiState.value.allSongs.map { it.getActualFolderId() }
+        artworkStates.prepare(folderIds)
+        artworkRepository.requestRefresh(directoryUri, folderIds)
     }
 
     /**
@@ -179,7 +219,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                     return@launch
                 }
 
-                jacketUris.remove(oldFolderId)
+                // 旧文件夹已经不存在，丢弃它的状态与缓存
+                artworkStates.remove(oldFolderId)
+                artworkRepository.remove(oldFolderId)
             }
 
             val success = songlistRepository.updateSong(directoryUri, updatedSong)
@@ -207,6 +249,11 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                         selectedSong = null
                     )
                 }
+
+                // 新文件夹要重新扫一次曲绘；先建好状态槽，UI 才能观察到结果
+                val newFolderIds = listOf(updatedSong.getActualFolderId())
+                artworkStates.prepare(newFolderIds)
+                artworkRepository.requestScan(directoryUri, newFolderIds)
             } else {
                 _uiState.update {
                     it.copy(
@@ -258,7 +305,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
             val success = songlistRepository.deleteSong(directoryUri, songId, folderId)
 
             if (success) {
-                jacketUris.remove(folderId)
+                // 曲目已删除，丢弃它的曲绘状态与缓存文件
+                artworkStates.remove(folderId)
+                artworkRepository.remove(folderId)
 
                 _uiState.update { state ->
                     val updatedAllSongs = state.allSongs.filter { it.id != songToDelete.id }
