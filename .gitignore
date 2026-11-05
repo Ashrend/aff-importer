@@ -29,6 +29,9 @@ output.json
 keystore.properties
 signing.properties
 google-services.json
+# 发布签名目录：密钥库与口令文件都不入库，只保留说明文件
+keystore/*
+!keystore/README.md
 
 # AI 助手产物（不属于应用源码，不入库）
 AGENTS.md

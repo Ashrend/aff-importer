@@ -4,6 +4,22 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+import java.util.Properties
+
+/**
+ * 发布签名配置。
+ *
+ * 口令与密钥库都不入库：密钥库放在 keystore/ 下，口令放在 keystore/keystore.properties，
+ * 两者都已被 .gitignore 排除。该文件不存在时 release 仍然可以构建，只是产物未签名。
+ */
+val keystorePropertiesFile = rootProject.file("keystore/keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseSigning = keystorePropertiesFile.exists()
+
 android {
     namespace = "aff.importer.tool"
     compileSdk = 34
@@ -21,6 +37,17 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -28,6 +55,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
