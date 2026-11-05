@@ -254,6 +254,17 @@ class ArtworkRepository(
                 cache.advanceGeneration(dirKey)
                 // 作废进行中的旧结果：旧缓存代次的 Uri 不能覆盖新代次的结果
                 generation++
+
+                // 清空待解析队列：换代次与「扫描发布缓存位置」之间存在一个窗口，
+                // 这期间被 worker 认领的旧任务会拿到「旧的缓存位置 + 新的扫描代次」，
+                // 解析完的代次校验就会通过，于是把图写进即将被清理的旧代次目录，
+                // 发出去的 file:// Uri 指向一个会被删掉的目录（卡片变空白）。
+                // 刷新本来就会把所有 id 重新入队，所以清空队列不会漏掉任何条目。
+                queue.clear()
+
+                // 本批次重新计数：队列清空后到新批次发布之间，
+                // 若沿用上一批的计数会被误判成「已完成」
+                completed = 0
             }
 
             performScan(directoryUri, ids, purgeAfterScan = true)
@@ -348,9 +359,21 @@ class ArtworkRepository(
                 purgePending = true
                 pendingPurgeDirKey = dirKey
             }
-            _scanState.value = ArtworkScanState.Scanning(0, total)
+            if (ids.isEmpty()) {
+                // 空批次：没有条目可解析，直接进入终态。
+                // 否则进度会永远停在「正在加载 0/0」——因为完成判定要求 total > 0。
+                _scanState.value = ArtworkScanState.Completed(0)
+            } else {
+                _scanState.value = ArtworkScanState.Scanning(0, total)
+            }
 
             queue.enqueue(ids)
+        }
+
+        // 空批次不会走到 worker 的完成判定（那里要求 total > 0），
+        // 所以挂起的旧代次清理要在这里触发，否则刷新后的旧目录会一直占着空间。
+        if (ids.isEmpty()) {
+            runPendingPurge()
         }
     }
 
@@ -613,17 +636,31 @@ class ArtworkRepository(
      * 若本批次是强制刷新触发的，还要在此时清理旧缓存代次目录。
      */
     private suspend fun markCompletedIfFinished() {
-        var purgeDirKey: String? = null
-        mutex.withLock {
+        val finished = mutex.withLock {
             // total 为 0 说明还没有任何一次扫描开始过（刚构造出来时的初始状态），
             // 这时候报 Completed(0) 会让进度条显示成「已完成」的样子
-            if (total <= 0 || queue.size != 0 || completed < total) return@withLock
+            if (total <= 0 || queue.size != 0 || completed < total) return@withLock false
             _scanState.value = ArtworkScanState.Completed(total)
-            if (purgePending) {
-                purgePending = false
-                purgeDirKey = pendingPurgeDirKey
-                pendingPurgeDirKey = null
-            }
+            true
+        }
+        if (finished) {
+            runPendingPurge()
+        }
+    }
+
+    /**
+     * 执行挂起的旧缓存代次清理（若有）。
+     *
+     * 锁内只负责取走待清理的目录标识，真正的递归删除在锁外做：
+     * 文件 IO 是阻塞的，放在锁里会把所有 worker 一起堵住。
+     */
+    private suspend fun runPendingPurge() {
+        var purgeDirKey: String? = null
+        mutex.withLock {
+            if (!purgePending) return@withLock
+            purgePending = false
+            purgeDirKey = pendingPurgeDirKey
+            pendingPurgeDirKey = null
         }
         purgeDirKey?.let {
             // 同步文件 IO，worker 已在 IO 线程上；放在锁外避免阻塞其它 worker
