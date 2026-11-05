@@ -4,9 +4,7 @@ import aff.importer.tool.ui.screens.ImportScreen
 import aff.importer.tool.ui.screens.PacklistScreen
 import aff.importer.tool.ui.screens.SonglistScreen
 import aff.importer.tool.ui.theme.ArcaeaImporterTheme
-import android.os.Build
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -50,8 +48,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         // 全面屏：内容延伸到状态栏与手势导航条区域，由各组件自行按 inset 避让
+        // 挖孔模式由 enableEdgeToEdge() 自己设置（API 28-29 为 SHORT_EDGES，API 30+ 为 ALWAYS），
+        // 这里不再额外覆盖，否则会把 androidx 选的 ALWAYS 静默降级成 SHORT_EDGES
         enableEdgeToEdge()
-        enableDisplayCutout()
         
         setContent {
             ArcaeaImporterTheme {
@@ -65,19 +64,6 @@ class MainActivity : ComponentActivity() {
                         packlistViewModel = packlistViewModel
                     )
                 }
-            }
-        }
-    }
-
-    /**
-     * 刘海 / 挖孔区域：允许内容绘制进刘海（横屏时不留黑边）。
-     * LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES 需要 API 28。
-     */
-    private fun enableDisplayCutout() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            window.attributes = window.attributes.apply {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
     }
@@ -125,8 +111,11 @@ private fun MainScreen(
         }
     ) { paddingValues ->
         // 底部导航栏高度与键盘高度取并集而不是相加：
-        // 键盘弹出时导航栏本身已被键盘盖住，若相加会把内容多顶高一个导航栏高度（202px），
+        // 键盘弹出时导航栏本身已被键盘盖住，若相加会把内容多顶高一个导航栏高度，
         // 在键盘上方留下一条空白带
+        // 这里依赖一个平台语义：WindowInsets.ime 的 bottom 是「窗口底边到键盘上沿」的距离，
+        // 已经包含了被键盘盖住的那段导航栏区 —— 所以键盘区与导航栏区是包含关系，
+        // 取并集（max）才对，相加会多出一个导航栏高度。
         val density = LocalDensity.current
         val navBarBottomPx = with(density) { paddingValues.calculateBottomPadding().toPx().roundToInt() }
         val imeBottomPx = WindowInsets.ime.getBottom(density)
