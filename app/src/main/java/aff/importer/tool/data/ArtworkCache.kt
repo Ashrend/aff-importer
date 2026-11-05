@@ -92,8 +92,8 @@ class ArtworkCache(context: Context, val namespace: String) {
     }
 
     /**
-     * 解码源图片并转码到缓存（降采样后精确缩放到目标尺寸，输出 JPEG）。
-     * 源图已小于目标尺寸时不放大，直接用解码结果。
+     * 解码源图片并转码到缓存（等比缩放 + 居中裁剪到目标尺寸，输出 JPEG）。
+     * 源图比目标尺寸小时不放大，直接用解码结果。
      *
      * @param targetWidth 目标宽度（曲绘 256、曲包封面 512）
      * @param targetHeight 目标高度（曲绘 256、曲包封面 256）
@@ -109,12 +109,27 @@ class ArtworkCache(context: Context, val namespace: String) {
         val tmp = tmpFileOf(target)
         try {
             val bitmap = decodeBitmap(source, targetWidth, targetHeight) ?: return@withContext null
+            var cropped: Bitmap? = null
             try {
-                // 源图已小于目标尺寸时直接用原图，不放大
-                val output = if (bitmap.width <= targetWidth && bitmap.height <= targetHeight) {
-                    bitmap
+                // 等比缩放 + 居中裁剪：比例与 UI 的 ContentScale.Crop 一致，绝不拉伸变形
+                val plan = ArtworkImageGeometry.plan(
+                    bitmap.width,
+                    bitmap.height,
+                    targetWidth,
+                    targetHeight
+                ) ?: return@withContext null
+
+                cropped = Bitmap.createBitmap(
+                    bitmap,
+                    plan.srcLeft,
+                    plan.srcTop,
+                    plan.srcWidth,
+                    plan.srcHeight
+                )
+                val output = if (cropped.width == plan.dstWidth && cropped.height == plan.dstHeight) {
+                    cropped
                 } else {
-                    Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+                    Bitmap.createScaledBitmap(cropped, plan.dstWidth, plan.dstHeight, true)
                 }
                 try {
                     target.parentFile?.mkdirs()
@@ -130,9 +145,11 @@ class ArtworkCache(context: Context, val namespace: String) {
                     }
                     target
                 } finally {
-                    if (output !== bitmap) output.recycle()
+                    if (output !== cropped) output.recycle()
                 }
             } finally {
+                // createBitmap 在裁剪区域等于整张图时会原样返回源 bitmap，这时不能重复回收
+                if (cropped != null && cropped !== bitmap) cropped.recycle()
                 bitmap.recycle()
             }
         } catch (e: Exception) {
