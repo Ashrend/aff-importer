@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
+import aff.importer.tool.data.model.ArtworkCacheLocation
 import aff.importer.tool.data.model.ArtworkKind
 import aff.importer.tool.data.model.ArtworkScanState
+import aff.importer.tool.data.model.ArtworkScanTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -66,6 +68,13 @@ private data class ChildDocument(
 data class ArtworkResult(val kind: ArtworkKind, val id: String, val uri: Uri?)
 
 /**
+ * 一个已认领的扫描任务：条目 id + 扫描代次 + 钉住的缓存位置 + 索引快照。
+ *
+ * 索引类型是本文件的私有类型，所以这里用私有别名收一下。
+ */
+private typealias ScanTask = ArtworkScanTask<Map<String, IndexedDocument>>
+
+/**
  * 图片扫描编排。
  *
  * 职责：
@@ -81,8 +90,14 @@ data class ArtworkResult(val kind: ArtworkKind, val id: String, val uri: Uri?)
  *
  * 线程约定：
  * - 队列、索引、当前目录、扫描代次、进度计数等共享状态，全部由 [mutex] 保护；
- * - [ArtworkPriorityQueue] 自身不加锁，锁由本类负责；
+ * - [ArtworkPriorityQueue] 与 [ArtworkScanBinding] 自身不加锁，锁由本类负责；
  * - SAF 查询是阻塞 IO，只允许出现在 worker 线程与 [buildIndex] 里，且 [buildIndex] 在锁外调用。
+ *
+ * 缓存位置必须「钉住」：
+ * 索引与缓存位置一起发布（[ArtworkScanBinding.publish]），worker 认领任务时一起取走
+ * （[ArtworkScanBinding.claim]）。之后不管环境里的「当前目录」怎么变，
+ * 这个任务都只对着自己带走的位置读写缓存 —— 否则切换目录时，
+ * 正在解析的旧任务会把上一个目录的曲绘写进下一个目录的缓存目录，且是永久性的。
  *
  * @param context 应用上下文（内部只使用 applicationContext）
  * @param scope worker 与请求协程所属的作用域，ViewModel 销毁时随之取消
@@ -143,7 +158,16 @@ class ArtworkRepository(
     /** 待解析队列；自身不加锁，所有读写都在 [mutex] 内 */
     private val queue = ArtworkPriorityQueue()
 
-    /** 保护 queue / index / currentDirectoryUri / generation / total / completed 的唯一一把锁 */
+    /**
+     * 当前发布的「索引 + 缓存位置」。
+     *
+     * 两者必须整体发布、整体认领：索引决定「这个 id 对应哪个 SAF 文件」，
+     * 缓存位置决定「这个文件写到哪个缓存目录」，错配就会串图。
+     * 自身不加锁，所有读写都在 [mutex] 内。
+     */
+    private val binding = ArtworkScanBinding<Map<String, IndexedDocument>>()
+
+    /** 保护 queue / binding / currentDirectoryUri / generation / total / completed 的唯一一把锁 */
     private val mutex = Mutex()
 
     /**
@@ -152,9 +176,6 @@ class ArtworkRepository(
      * 避免把旧目录 / 旧缓存代次的 Uri 发到新状态上。
      */
     private var generation = 0
-
-    /** 当前目录的图片索引，整体替换，读时取不可变快照 */
-    private var index: Map<String, IndexedDocument> = emptyMap()
 
     /** 当前扫描的目录 */
     private var currentDirectoryUri: Uri? = null
@@ -170,6 +191,9 @@ class ArtworkRepository(
 
     /** 是否需要在扫描完成后清理旧缓存代次目录（强制刷新 / 目录切换时置位，清理后清除；只清理当前目录标识下的） */
     private var purgePending = false
+
+    /** 待清理的目录标识：清理时只动这个目录标识下的其它代次目录 */
+    private var pendingPurgeDirKey: String? = null
 
     /** 结果通道：UNLIMITED 保证结果不丢，由调用方串行消费 */
     private val _results = Channel<ArtworkResult>(Channel.UNLIMITED)
@@ -216,14 +240,21 @@ class ArtworkRepository(
      */
     fun requestRefresh(directoryUri: Uri, ids: List<String>) {
         jobScope.launch(Dispatchers.IO) {
-            // 先绑定目录标识：换代次推进的是「当前目录标识」的代次
-            cache.useDirectory(ArtworkCachePaths.directoryKey(directoryUri.toString()))
+            val dirKey = ArtworkCachePaths.directoryKey(directoryUri.toString())
 
-            // 换代次 → 落到新的缓存目录 → Coil 的缓存键随之改变，必然重新加载
-            cache.advanceGeneration()
+            // 先绑定目录标识：换代次推进的是「这个目录标识」的代次
+            cache.useDirectory(dirKey)
 
-            // 作废进行中的旧结果：旧缓存代次的 Uri 不能覆盖新代次的结果
-            mutex.withLock { generation++ }
+            // 换代次 → 落到新的缓存目录 → Coil 的缓存键随之改变，必然重新加载。
+            //
+            // 换代次与「扫描发布缓存位置」在同一个临界区里完成：
+            // 这样扫描发布出来的位置一定是最新的代次，
+            // 不会出现「刷新已经换代次了，扫描却还往旧代次里写」。
+            mutex.withLock {
+                cache.advanceGeneration(dirKey)
+                // 作废进行中的旧结果：旧缓存代次的 Uri 不能覆盖新代次的结果
+                generation++
+            }
 
             performScan(directoryUri, ids, purgeAfterScan = true)
         }
@@ -249,12 +280,16 @@ class ArtworkRepository(
      * 非 suspend：ViewModel 在主线程调用。
      * [ArtworkCache.delete] 是同步文件 IO，因此发射到 IO 线程执行，调用后立即返回。
      *
+     * 删除的位置取「当前发布的那一批」：条目属于当前列表，而列表对应当前这次扫描。
+     * 还没发布过任何批次时退回到环境里的当前目录。
+     *
      * 不需要从队列里移除该 id：被删除的曲目文件夹已不存在，解析结果自然为 null，
      * 而发布时对应的状态条目已被 ViewModel 移除，写入是空操作。
      */
     fun remove(id: String) {
         jobScope.launch(Dispatchers.IO) {
-            cache.delete(id)
+            val location = mutex.withLock { binding.location() } ?: cache.currentLocation()
+            location?.let { cache.delete(it, id) }
         }
     }
 
@@ -269,8 +304,9 @@ class ArtworkRepository(
      */
     private suspend fun performScan(directoryUri: Uri, ids: List<String>, purgeAfterScan: Boolean) {
         // 1) 先把目录标识落到缓存上（锁外）：
-        //    缓存路径带目录维度，不同目标目录天然隔离；换到已用过的目录则直接复用它的热缓存
-        cache.useDirectory(ArtworkCachePaths.directoryKey(directoryUri.toString()))
+        //    缓存路径带目录维度，不同目标目录天然隔离；换到已用过的目录则直接复用它的热缓存。
+        val dirKey = ArtworkCachePaths.directoryKey(directoryUri.toString())
+        cache.useDirectory(dirKey)
 
         // 2) 目录切换检测（锁内）：作废进行中的旧结果，并清空旧队列
         mutex.withLock {
@@ -282,6 +318,7 @@ class ArtworkRepository(
                 // 只清理当前目录标识下的其它代次目录；
                 // 别的目录标识属于别的目标目录，要留着（切回旧目录时直接复用）
                 purgePending = true
+                pendingPurgeDirKey = dirKey
             }
         }
 
@@ -289,12 +326,18 @@ class ArtworkRepository(
         //    和主线程发来的优先级请求一起排队
         val newIndex = buildIndex(directoryUri)
 
-        // 4) 在锁内发布索引并入队
+        // 4) 在锁内发布索引、缓存位置并入队
         mutex.withLock {
             // 索引每次都重建（不只是目录变化时）：
             // remote_dl 改名会新增一个文件夹，目录没变但旧索引里没有这个 folderId，
             // 重建只需 1~2 次 SAF 查询，代价可忽略，换来「任何时候都能解析到当前实际存在的条目」。
-            index = newIndex
+            //
+            // 索引与缓存位置一起发布：worker 认领任务时读到的是配套的一对，
+            // 不会出现「用 A 目录的索引解析、写进 B 目录的缓存」。
+            //
+            // 位置在这里现取（目录标识已在步骤 1 绑定过，这里只是查一下该用哪一代）：
+            // 换代次与发布互斥，现取到的就是最新代次。
+            binding.publish(newIndex, cache.locationOf(dirKey))
 
             // 进度按批次计算，不是累计
             total = ids.size
@@ -303,6 +346,7 @@ class ArtworkRepository(
             if (purgeAfterScan) {
                 // 标记：本次扫描完成后清理旧缓存代次目录
                 purgePending = true
+                pendingPurgeDirKey = dirKey
             }
             _scanState.value = ArtworkScanState.Scanning(0, total)
 
@@ -380,9 +424,19 @@ class ArtworkRepository(
      */
     private suspend fun workerLoop() {
         while (currentCoroutineContext().isActive) {
-            // 取任务与记录代次必须在同一个临界区完成：
-            // 若分两次加锁，中间发生目录切换就会读到新代次，旧任务的结果就拦不住了
-            val claimed = mutex.withLock { queue.poll()?.let { id -> id to generation } }
+            // 取任务、代次、索引与缓存位置必须在同一个临界区完成：
+            // 若分几次加锁，中间发生目录切换就会读到新的索引与位置，
+            // 旧任务就可能把上一个目录的曲绘写进下一个目录的缓存目录。
+            val claimed = mutex.withLock {
+                val id = queue.poll() ?: return@withLock null
+                val task = binding.claim(id, generation)
+                if (task == null) {
+                    // 理论上不会发生：入队与位置发布在同一个临界区里完成。
+                    // 真发生了也没有安全的落盘目标（没有位置），只能放弃这个条目。
+                    completed++
+                }
+                task
+            }
             if (claimed == null) {
                 // 队列空：可能本批次已经跑完，顺带更新完成状态
                 markCompletedIfFinished()
@@ -390,22 +444,19 @@ class ArtworkRepository(
                 continue
             }
 
-            // 本次任务所属的代次
-            val task = claimed.first
-            val myGeneration = claimed.second
-
             // SAF 解析：worker 跑在 IO 线程上
-            val uri = resolveOne(task)
+            // 任务自带缓存位置：解析期间即使目录切换了，写入目标也不会变
+            val uri = resolveOne(claimed)
 
             // 解析期间目录可能已切换（或已强制刷新）：代次变了就丢弃结果，
             // 绝不能把旧目录 / 旧缓存代次的 Uri 发出去
-            val stillValid = mutex.withLock { generation == myGeneration }
+            val stillValid = mutex.withLock { generation == claimed.generation }
             if (!stillValid) {
                 continue
             }
 
             // 结果进 Channel，由调用方串行消费（UNLIMITED，不会丢）
-            _results.send(ArtworkResult(kind, task, uri))
+            _results.send(ArtworkResult(kind, claimed.id, uri))
 
             mutex.withLock { completed++ }
             publishProgress()
@@ -415,38 +466,39 @@ class ArtworkRepository(
     /**
      * 解析单个条目的图片。
      *
+     * 缓存的读与写都用任务自带的 location：
+     * 环境里的「当前目录」随时可能因为用户切换目录而改变，不能拿来算落盘目标。
+     *
      * @return 图片 Uri；没有源文件时为 null
      */
-    private suspend fun resolveOne(id: String): Uri? {
+    private suspend fun resolveOne(task: ScanTask): Uri? {
         return try {
-            val cachedUri = cachedUriOf(id)
+            val cachedUri = cachedUriOf(task.location, task.id)
             if (cachedUri != null) {
                 // 缓存命中：直接给应用内缓存文件的 Uri，完全跳过 SAF 查询
                 cachedUri
             } else {
-                // 索引只整体替换，读一份不可变快照即可
-                val indexSnapshot = mutex.withLock { index }
                 when (kind) {
-                    ArtworkKind.SONG_JACKET -> resolveSongJacket(id, indexSnapshot)
-                    ArtworkKind.PACK_BANNER -> resolvePackBanner(id, indexSnapshot)
+                    ArtworkKind.SONG_JACKET -> resolveSongJacket(task.id, task.location, task.index)
+                    ArtworkKind.PACK_BANNER -> resolvePackBanner(task.id, task.location, task.index)
                 }
             }
         } catch (e: CancellationException) {
             // 协程被取消（ViewModel 销毁等）不是错误，直接向上抛，让 worker 正常结束
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "解析图片失败: $kind/$id", e)
+            Log.e(TAG, "解析图片失败: $kind/${task.id}", e)
             null
         }
     }
 
     /**
      * 缓存命中时返回应用内缓存文件的 Uri；未命中返回 null。
+     *
+     * @param location 任务钉住的位置：只看这个位置下的缓存文件
      */
-    private fun cachedUriOf(id: String): Uri? {
-        if (!cache.isCached(id)) return null
-        val file = cache.fileFor(id) ?: return null
-        // 代次可能在上面两次调用之间变化，这里复核一次，避免指向不存在的文件
+    private fun cachedUriOf(location: ArtworkCacheLocation, id: String): Uri? {
+        val file = cache.fileFor(location, id)
         return if (file.isFile) Uri.fromFile(file) else null
     }
 
@@ -455,6 +507,7 @@ class ArtworkRepository(
      */
     private suspend fun resolveSongJacket(
         id: String,
+        location: ArtworkCacheLocation,
         indexSnapshot: Map<String, IndexedDocument>
     ): Uri? {
         // 没有这个文件夹 → 该曲目不存在（可能已被删除或改名）
@@ -467,10 +520,11 @@ class ArtworkRepository(
         val fileUri = DocumentsContract.buildDocumentUriUsingTree(folder.treeUri, file.documentId)
 
         // 缩略图本身就是 256px JPEG，直接复制字节；全尺寸图需要降采样转码
+        // 落盘目标是任务自己的位置，绝不会写到别的目录标识下
         val cached = if (jacket.isThumbnail) {
-            cache.copyToCache(id, fileUri)
+            cache.copyToCache(location, id, fileUri)
         } else {
-            cache.transcodeToCache(id, fileUri, SONG_JACKET_SIZE, SONG_JACKET_SIZE)
+            cache.transcodeToCache(location, id, fileUri, SONG_JACKET_SIZE, SONG_JACKET_SIZE)
         }
         // 落盘失败时回退到 SAF 的 content:// Uri：图片仍能显示，只是读取慢一些
         return cached?.let { Uri.fromFile(it) } ?: fileUri
@@ -481,13 +535,14 @@ class ArtworkRepository(
      */
     private suspend fun resolvePackBanner(
         id: String,
+        location: ArtworkCacheLocation,
         indexSnapshot: Map<String, IndexedDocument>
     ): Uri? {
         val file = indexSnapshot[id] ?: return null
         val fileUri = file.uri
 
-        // 封面是横幅，按 512x256 转码
-        val cached = cache.transcodeToCache(id, fileUri, PACK_BANNER_WIDTH, PACK_BANNER_HEIGHT)
+        // 封面是横幅，按 512x256 转码；落盘目标是任务自己的位置
+        val cached = cache.transcodeToCache(location, id, fileUri, PACK_BANNER_WIDTH, PACK_BANNER_HEIGHT)
         // 落盘失败时回退到 SAF 的 content:// Uri
         return cached?.let { Uri.fromFile(it) } ?: fileUri
     }
@@ -558,7 +613,7 @@ class ArtworkRepository(
      * 若本批次是强制刷新触发的，还要在此时清理旧缓存代次目录。
      */
     private suspend fun markCompletedIfFinished() {
-        var needPurge = false
+        var purgeDirKey: String? = null
         mutex.withLock {
             // total 为 0 说明还没有任何一次扫描开始过（刚构造出来时的初始状态），
             // 这时候报 Completed(0) 会让进度条显示成「已完成」的样子
@@ -566,12 +621,14 @@ class ArtworkRepository(
             _scanState.value = ArtworkScanState.Completed(total)
             if (purgePending) {
                 purgePending = false
-                needPurge = true
+                purgeDirKey = pendingPurgeDirKey
+                pendingPurgeDirKey = null
             }
         }
-        if (needPurge) {
+        purgeDirKey?.let {
             // 同步文件 IO，worker 已在 IO 线程上；放在锁外避免阻塞其它 worker
-            cache.purgeOtherGenerations()
+            // 只清理这个目录标识下的其它代次目录，不动别的目录标识
+            cache.purgeOtherGenerations(it)
         }
     }
 }

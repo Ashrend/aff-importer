@@ -1,5 +1,6 @@
 package aff.importer.tool.data
 
+import aff.importer.tool.data.model.ArtworkCacheLocation
 import java.io.File
 import java.security.MessageDigest
 
@@ -78,6 +79,19 @@ object ArtworkCachePaths {
         generationDir(cacheDir, namespace, dirKey, generation),
         ArtworkFileRules.cacheFileName(id)
     )
+
+    /**
+     * 缓存文件：按显式位置（目录标识 + 代次）计算。
+     *
+     * 扫描任务用它算自己该写到哪里：位置是任务自己带走的，
+     * 不会因为用户切换目录而落到别的目录标识下。
+     */
+    fun fileFor(
+        cacheDir: File,
+        namespace: String,
+        location: ArtworkCacheLocation,
+        id: String
+    ): File = fileFor(cacheDir, namespace, location.directoryKey, location.generation, id)
 
     /** 该目录标识下已存在的代次目录 */
     fun generationDirs(cacheDir: File, namespace: String, dirKey: String): List<File> {

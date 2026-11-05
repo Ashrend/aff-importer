@@ -1,5 +1,6 @@
 package aff.importer.tool.data
 
+import aff.importer.tool.data.model.ArtworkCacheLocation
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -25,6 +26,12 @@ import java.io.File
  *
  * 代次（generation）负责「强制刷新」：同一个目录内自增一代就换一套路径，
  * Coil 的缓存键（路径）随之改变，必然重新加载。
+ *
+ * 所有读写都以**显式位置**（[ArtworkCacheLocation] = 目录标识 + 代次）为参数：
+ * 扫描任务认领时把自己的位置带走，之后目录切换也不会改写它落盘的目标，
+ * 不会出现「上一个目录的曲绘被写进下一个目录的缓存目录」。
+ * 类里保留的 ambient 状态只用于「当前是哪个目录」这类 bookkeeping
+ * （见 [useDirectory] / [advanceGeneration]），不参与任何路径计算。
  */
 class ArtworkCache(context: Context, val namespace: String) {
 
@@ -43,10 +50,11 @@ class ArtworkCache(context: Context, val namespace: String) {
 
     /**
      * 当前绑定的目录标识与它下面的代次。
-     * null 表示还没有绑定任何目录（此时所有文件操作都是空操作）。
+     * null 表示还没有绑定任何目录。
      *
-     * 用一个不可变快照整体替换，读写路径上的两份数据永远来自同一次绑定，
-     * 不会出现「目录是 A、代次是 B」的错配。
+     * 只用于「当前是哪个目录」这类 bookkeeping：
+     * 真正的文件读写一律以显式位置（[ArtworkCacheLocation]）为参数，
+     * 不读这里的环境状态 —— 环境状态随时可能因为用户切换目录而改变。
      */
     @Volatile
     private var state: State? = null
@@ -68,60 +76,74 @@ class ArtworkCache(context: Context, val namespace: String) {
     /** 当前目录标识与代次的一对不可变快照 */
     private data class State(val directoryKey: String, val generation: Int)
 
-    /** 当前目录标识下的代次，只读，由 [advanceGeneration] 改变 */
-    val generation: Int
-        get() = state?.generation ?: 0
+    /**
+     * 当前绑定的位置；还没绑定任何目录时返回 null。
+     */
+    fun currentLocation(): ArtworkCacheLocation? {
+        val current = state ?: return null
+        return ArtworkCacheLocation(current.directoryKey, current.generation)
+    }
 
     /**
-     * 把缓存指向某个目录标识。
+     * 把缓存指向某个目录标识，并返回这个目录标识当前的位置。
      *
-     * - 换到**另一个**目录标识：代次重置为该标识已有的代次（热缓存直接复用）；
-     * - 换到**同一个**目录标识：什么都不做（代次保持不变）。
+     * - 换到**另一个**目录标识：代次取该标识已有的代次（热缓存直接复用）；
+     * - 换到**同一个**目录标识：代次保持不变（[generations] 里记的就是它）。
      *
      * 旧版布局（gen-N 直接挂在命名空间目录下）不再被读取，
      * 首次绑定目录标识时顺手删掉，避免旧字节一直占着空间。
      *
      * @param dirKey 目录标识（由 [ArtworkCachePaths.directoryKey] 派生）
+     * @return 该目录标识当前的位置快照（目录标识 + 代次）
      */
-    fun useDirectory(dirKey: String) {
+    fun useDirectory(dirKey: String): ArtworkCacheLocation {
         synchronized(this) {
-            val current = state
-            // 同一个目录标识：什么都不做（代次保持不变）
-            if (current != null && current.directoryKey == dirKey) return@synchronized
             val generation = generations.getOrPut(dirKey) {
                 ArtworkCachePaths.existingGeneration(cacheDir, namespace, dirKey)
             }
             state = State(dirKey, generation)
             purgeLegacyGenerations()
+            return ArtworkCacheLocation(dirKey, generation)
         }
     }
 
     /**
-     * 当前代次下该 id 的缓存文件路径；还没绑定目录时返回 null。
-     * 文件名由 [ArtworkFileRules.cacheFileName] 生成（id 已清洗），不会出现目录穿越。
+     * 某个目录标识当前的位置（目录标识 + 代次）。
+     *
+     * 不改变「当前是哪个目录」，只是查一下这个目录标识现在该用哪一代。
+     * 换代次与扫描发布位置在同一个临界区里完成时，用它就能拿到最新的代次。
      */
-    fun fileFor(id: String): File? {
-        val current = state ?: return null
-        return ArtworkCachePaths.fileFor(
-            cacheDir,
-            namespace,
-            current.directoryKey,
-            current.generation,
-            id
-        )
+    fun locationOf(dirKey: String): ArtworkCacheLocation {
+        synchronized(this) {
+            val generation = generations.getOrPut(dirKey) {
+                ArtworkCachePaths.existingGeneration(cacheDir, namespace, dirKey)
+            }
+            return ArtworkCacheLocation(dirKey, generation)
+        }
     }
 
-    /** 当前代次下是否已有该 id 的缓存文件 */
-    fun isCached(id: String): Boolean = fileFor(id)?.isFile == true
+    /**
+     * 指定位置下该 id 的缓存文件路径。
+     * 文件名由 [ArtworkFileRules.cacheFileName] 生成（id 已清洗），不会出现目录穿越。
+     */
+    fun fileFor(location: ArtworkCacheLocation, id: String): File =
+        ArtworkCachePaths.fileFor(cacheDir, namespace, location, id)
 
     /**
      * 直接复制字节到缓存，不解码也不重新编码。
      * 用于本来就是 256px JPEG 缩略图的曲绘。
      *
+     * @param location 落盘位置：必须是这个任务自己认领的位置，不能用「当前目录」
+     * @param id 条目 id
+     * @param source SAF 源文件 Uri
      * @return 缓存文件路径；失败返回 null，且不会留下半截文件
      */
-    suspend fun copyToCache(id: String, source: Uri): File? = withContext(Dispatchers.IO) {
-        val target = fileFor(id) ?: return@withContext null
+    suspend fun copyToCache(
+        location: ArtworkCacheLocation,
+        id: String,
+        source: Uri
+    ): File? = withContext(Dispatchers.IO) {
+        val target = fileFor(location, id)
         val tmp = tmpFileOf(target)
         try {
             target.parentFile?.mkdirs()
@@ -151,17 +173,21 @@ class ArtworkCache(context: Context, val namespace: String) {
      * 解码源图片并转码到缓存（等比缩放 + 居中裁剪到目标尺寸，输出 JPEG）。
      * 源图比目标尺寸小时不放大，直接用解码结果。
      *
+     * @param location 落盘位置：必须是这个任务自己认领的位置，不能用「当前目录」
+     * @param id 条目 id
+     * @param source SAF 源文件 Uri
      * @param targetWidth 目标宽度（曲绘 256、曲包封面 512）
      * @param targetHeight 目标高度（曲绘 256、曲包封面 256）
      * @return 缓存文件路径；失败返回 null，且不会留下半截文件
      */
     suspend fun transcodeToCache(
+        location: ArtworkCacheLocation,
         id: String,
         source: Uri,
         targetWidth: Int,
         targetHeight: Int
     ): File? = withContext(Dispatchers.IO) {
-        val target = fileFor(id) ?: return@withContext null
+        val target = fileFor(location, id)
         val tmp = tmpFileOf(target)
         try {
             val bitmap = decodeBitmap(source, targetWidth, targetHeight) ?: return@withContext null
@@ -218,43 +244,54 @@ class ArtworkCache(context: Context, val namespace: String) {
     }
 
     /**
-     * 删除当前代次下该 id 的缓存文件（含可能残留的临时文件）。
+     * 删除指定位置下该 id 的缓存文件（含可能残留的临时文件）。
      * 同步执行，调用方应在 IO 线程调用。
      */
-    fun delete(id: String) {
-        val target = fileFor(id) ?: return
+    fun delete(location: ArtworkCacheLocation, id: String) {
+        val target = fileFor(location, id)
         target.delete()
         tmpFileOf(target).delete()
     }
 
     /**
-     * 代次自增并返回新值。
+     * 推进某个目录标识的代次，并返回新的位置。
+     *
      * 不删除旧代次目录：刷新过程中旧图仍然可用，等新扫描完成后再由 [purgeOtherGenerations] 清理。
      *
      * 只用于手动刷新（[ArtworkRepository.requestRefresh]）：
      * 目录之间的隔离由路径里的目录标识负责，不需要靠换代次。
+     *
+     * @param dirKey 要推进代次的目录标识（调用方应先用 [useDirectory] 绑定同一个标识）
      */
-    fun advanceGeneration(): Int {
+    fun advanceGeneration(dirKey: String): ArtworkCacheLocation {
         synchronized(this) {
-            val current = state ?: return 0
-            val next = current.generation + 1
-            generations[current.directoryKey] = next
-            state = State(current.directoryKey, next)
-            return next
+            val current = generations.getOrPut(dirKey) {
+                ArtworkCachePaths.existingGeneration(cacheDir, namespace, dirKey)
+            }
+            val next = current + 1
+            generations[dirKey] = next
+            // 当前绑定的就是这个目录标识时，环境状态同步跟进
+            if (state?.directoryKey == dirKey) {
+                state = State(dirKey, next)
+            }
+            return ArtworkCacheLocation(dirKey, next)
         }
     }
 
     /**
-     * 递归删除当前目录标识下、当前代次之外的所有代次目录。
+     * 递归删除指定目录标识下、当前代次之外的所有代次目录。
      *
-     * **只动当前目录标识**：别的目录标识属于别的目标目录，
+     * **只动这一个目录标识**：别的目录标识属于别的目标目录，
      * 留着它们才能在切回旧目录时立刻复用缓存。
+     *
+     * 保留的是这个目录标识**当前**的代次（[locationOf]），
+     * 所以即使清理期间又推进了代次，正在写的新一代也不会被误删。
      *
      * 同步执行，调用方应在 IO 线程调用。
      */
-    fun purgeOtherGenerations() {
-        val current = state ?: return
-        val dirs = ArtworkCachePaths.generationDirs(cacheDir, namespace, current.directoryKey)
+    fun purgeOtherGenerations(dirKey: String) {
+        val current = locationOf(dirKey)
+        val dirs = ArtworkCachePaths.generationDirs(cacheDir, namespace, dirKey)
         for (dir in dirs) {
             val number = ArtworkCachePaths.generationNumber(dir.name) ?: continue
             if (number == current.generation) continue

@@ -1,5 +1,6 @@
 package aff.importer.tool.data
 
+import aff.importer.tool.data.model.ArtworkCacheLocation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -133,5 +134,50 @@ class ArtworkCachePathsTest {
         ArtworkCachePaths.generationDir(cacheDir, "songs", "dirA", 2).mkdirs()
         assertTrue(ArtworkCachePaths.legacyGenerationDirs(cacheDir, "songs").isEmpty())
         assertEquals(1, ArtworkCachePaths.generationDirs(cacheDir, "songs", "dirA").size)
+    }
+
+    @Test
+    fun `按位置算出的缓存文件路径与按目录标识加代次算出的一致`() {
+        val cacheDir = temp.newFolder("cache")
+        val location = ArtworkCacheLocation("dirA", 2)
+        assertEquals(
+            ArtworkCachePaths.fileFor(cacheDir, "songs", "dirA", 2, "my_song"),
+            ArtworkCachePaths.fileFor(cacheDir, "songs", location, "my_song")
+        )
+    }
+
+    @Test
+    fun `不同目录标识的位置算出不同的文件路径`() {
+        val cacheDir = temp.newFolder("cache")
+        val a = ArtworkCachePaths.fileFor(cacheDir, "songs", ArtworkCacheLocation("dirA", 0), "my_song")
+        val b = ArtworkCachePaths.fileFor(cacheDir, "songs", ArtworkCacheLocation("dirB", 0), "my_song")
+        // 两个目录的曲绘不会落到同一个文件上
+        assertNotEquals(a, b)
+        assertNotEquals(a.parentFile, b.parentFile)
+    }
+
+    @Test
+    fun `同一个位置跨进程算出同一个文件路径`() {
+        val cacheDir = temp.newFolder("cache")
+        val location = ArtworkCacheLocation("dirA", 0)
+        // 冷启动复用：同样的位置算出的还是同一个文件，不必重新拷贝
+        assertEquals(
+            ArtworkCachePaths.fileFor(cacheDir, "songs", location, "my_song"),
+            ArtworkCachePaths.fileFor(cacheDir, "songs", location, "my_song")
+        )
+        assertEquals(
+            File(cacheDir, "artwork/songs/dirA/gen-0/my_song.jpg"),
+            ArtworkCachePaths.fileFor(cacheDir, "songs", location, "my_song")
+        )
+    }
+
+    @Test
+    fun `换代次后文件路径改变`() {
+        val cacheDir = temp.newFolder("cache")
+        val before = ArtworkCachePaths.fileFor(cacheDir, "songs", ArtworkCacheLocation("dirA", 0), "my_song")
+        val after = ArtworkCachePaths.fileFor(cacheDir, "songs", ArtworkCacheLocation("dirA", 1), "my_song")
+        // 换代次 → 路径变化 → Coil 的缓存键变化，必然重新加载
+        assertNotEquals(before, after)
+        assertEquals(File(cacheDir, "artwork/songs/dirA/gen-1/my_song.jpg"), after)
     }
 }
