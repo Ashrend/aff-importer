@@ -133,7 +133,11 @@ class ArtworkRepository(
     /** worker 与请求协程所属的作用域 */
     private val jobScope: CoroutineScope = scope
 
-    /** 应用内缓存文件层（它自己的代次与本类的扫描代次是两回事） */
+    /**
+     * 应用内缓存文件层。
+     * 它自己按「目录标识 + 代次」组织文件（[ArtworkCachePaths.directoryKey]），
+     * 与本类的扫描代次是两回事。
+     */
     private val cache = ArtworkCache(appContext, kind.namespace)
 
     /** 待解析队列；自身不加锁，所有读写都在 [mutex] 内 */
@@ -164,7 +168,7 @@ class ArtworkRepository(
     /** 上次发布进度的时刻（毫秒），用于节流 */
     private var lastProgressAt = 0L
 
-    /** 是否需要在扫描完成后清理旧缓存代次目录（强制刷新 / 目录切换时置位，清理后清除） */
+    /** 是否需要在扫描完成后清理旧缓存代次目录（强制刷新 / 目录切换时置位，清理后清除；只清理当前目录标识下的） */
     private var purgePending = false
 
     /** 结果通道：UNLIMITED 保证结果不丢，由调用方串行消费 */
@@ -204,14 +208,17 @@ class ArtworkRepository(
     /**
      * 强制刷新：换缓存代次 → 全量重扫 → 扫描完成后清理旧代次目录。
      *
-     * 若目标目录同时发生了变化，[performScan] 还会再推进一次缓存代次，
-     * 跳过一代是无害的（旧代次目录随后会被清理）。
+     * 代次是「同一个目录内」的刷新机制，所以必须先把目录标识落到缓存上，
+     * 再推进代次 —— 否则刷新的是另一个目录时，推进的会是当前目录的代次。
      *
      * @param directoryUri 目标目录
      * @param ids 待解析的条目 id
      */
     fun requestRefresh(directoryUri: Uri, ids: List<String>) {
         jobScope.launch(Dispatchers.IO) {
+            // 先绑定目录标识：换代次推进的是「当前目录标识」的代次
+            cache.useDirectory(ArtworkCachePaths.directoryKey(directoryUri.toString()))
+
             // 换代次 → 落到新的缓存目录 → Coil 的缓存键随之改变，必然重新加载
             cache.advanceGeneration()
 
@@ -254,34 +261,35 @@ class ArtworkRepository(
     /**
      * 执行一次扫描：重建索引、重置进度、入队。
      *
-     * 目录发生变化时，缓存代次也会一起推进（见下面 [ArtworkCache.advanceGeneration]）：
-     * 缓存路径不带目录维度，不换代次就会把上一个目录的曲绘当成当前目录的曲绘。
+     * 目录隔离由缓存路径里的目录标识负责（cacheDir/artwork/<namespace>/<dirKey>/gen-<N>/…），
+     * 所以切换目录**不需要**换代次：目录标识一变，缓存路径就变，两个目录的缓存互不相干。
+     * 代次只在同一个目录内用于强制刷新。
      *
      * @param purgeAfterScan 本批次完成后是否清理旧缓存代次目录
      */
     private suspend fun performScan(directoryUri: Uri, ids: List<String>, purgeAfterScan: Boolean) {
-        // 1) 目录切换检测（锁内）：作废进行中的旧结果，并清空旧队列
+        // 1) 先把目录标识落到缓存上（锁外）：
+        //    缓存路径带目录维度，不同目标目录天然隔离；换到已用过的目录则直接复用它的热缓存
+        cache.useDirectory(ArtworkCachePaths.directoryKey(directoryUri.toString()))
+
+        // 2) 目录切换检测（锁内）：作废进行中的旧结果，并清空旧队列
         mutex.withLock {
             if (directoryUri != currentDirectoryUri) {
                 currentDirectoryUri = directoryUri
                 generation++
                 queue.clear()
 
-                // 缓存路径里没有目录维度（cacheDir/artwork/<namespace>/gen-<N>/<id>.jpg），
-                // 目录一变就必须让缓存也换代次，否则两个目录里同名的 id
-                // 会命中上一个目录的缓存文件，屏幕上就会显示错曲绘。
-                cache.advanceGeneration()
-
-                // 旧代次里的图片已经作废，等本批扫描跑完再清理
+                // 只清理当前目录标识下的其它代次目录；
+                // 别的目录标识属于别的目标目录，要留着（切回旧目录时直接复用）
                 purgePending = true
             }
         }
 
-        // 2) 索引在锁外构建：SAF 查询是阻塞 IO，放在锁里会让所有 worker
+        // 3) 索引在锁外构建：SAF 查询是阻塞 IO，放在锁里会让所有 worker
         //    和主线程发来的优先级请求一起排队
         val newIndex = buildIndex(directoryUri)
 
-        // 3) 在锁内发布索引并入队
+        // 4) 在锁内发布索引并入队
         mutex.withLock {
             // 索引每次都重建（不只是目录变化时）：
             // remote_dl 改名会新增一个文件夹，目录没变但旧索引里没有这个 folderId，
@@ -437,7 +445,7 @@ class ArtworkRepository(
      */
     private fun cachedUriOf(id: String): Uri? {
         if (!cache.isCached(id)) return null
-        val file = cache.fileFor(id)
+        val file = cache.fileFor(id) ?: return null
         // 代次可能在上面两次调用之间变化，这里复核一次，避免指向不存在的文件
         return if (file.isFile) Uri.fromFile(file) else null
     }
