@@ -6,9 +6,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 应用内图片缓存的文件层。
@@ -69,9 +71,13 @@ class ArtworkCache(context: Context, val namespace: String) {
      */
     private val generations = HashMap<String, Int>()
 
-    /** 旧版布局的代次目录是否已清理（每个实例只清一次） */
-    @Volatile
-    private var legacyCleaned = false
+    /**
+     * 旧版布局的代次目录是否已开始清理（只清一次）。
+     *
+     * 用 CAS 保证只有一个线程真正执行删除；删除本身是阻塞的文件 IO，
+     * 不能在锁内做（见 [useDirectory]）。
+     */
+    private val legacyCleanupStarted = AtomicBoolean(false)
 
     /** 当前目录标识与代次的一对不可变快照 */
     private data class State(val directoryKey: String, val generation: Int)
@@ -97,12 +103,16 @@ class ArtworkCache(context: Context, val namespace: String) {
      * @return 该目录标识当前的位置快照（目录标识 + 代次）
      */
     fun useDirectory(dirKey: String): ArtworkCacheLocation {
+        // 旧版布局的清理是递归文件 IO，必须在锁外做：
+        // worker 取缓存位置（locationOf）时也要拿这把锁，
+        // 锁内做递归删除会把所有 worker 一起堵住。
+        purgeLegacyGenerations()
+
         synchronized(this) {
             val generation = generations.getOrPut(dirKey) {
                 ArtworkCachePaths.existingGeneration(cacheDir, namespace, dirKey)
             }
             state = State(dirKey, generation)
-            purgeLegacyGenerations()
             return ArtworkCacheLocation(dirKey, generation)
         }
     }
@@ -160,6 +170,11 @@ class ArtworkCache(context: Context, val namespace: String) {
                 return@withContext null
             }
             target
+        } catch (e: CancellationException) {
+            // 协程被取消不是错误：向上抛，让 worker 正常结束。
+            // CancellationException 是 IllegalStateException 的子类，
+            // 不单独处理的话会被下面的通用 catch 吞掉。
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "复制图片到缓存失败: $id", e)
             null
@@ -234,6 +249,11 @@ class ArtworkCache(context: Context, val namespace: String) {
                 if (cropped != null && cropped !== bitmap) cropped.recycle()
                 bitmap.recycle()
             }
+        } catch (e: CancellationException) {
+            // 协程被取消不是错误：向上抛，让 worker 正常结束。
+            // CancellationException 是 IllegalStateException 的子类，
+            // 不单独处理的话会被下面的通用 catch 吞掉。
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "转码图片到缓存失败: $id", e)
             null
@@ -302,10 +322,13 @@ class ArtworkCache(context: Context, val namespace: String) {
     /**
      * 清理旧版布局的代次目录（gen-N 直接挂在命名空间目录下）。
      * 新布局不再读取它们，只在首次绑定目录标识时删一次。
+     *
+     * 递归删除是阻塞的文件 IO，**不能在 synchronized(this) 里做**：
+     * worker 取缓存位置时也要拿这把锁，锁内做删除会把所有 worker 一起堵住。
      */
     private fun purgeLegacyGenerations() {
-        if (legacyCleaned) return
-        legacyCleaned = true
+        // CAS：只有一个线程真正执行删除，其余线程直接返回
+        if (!legacyCleanupStarted.compareAndSet(false, true)) return
         for (dir in ArtworkCachePaths.legacyGenerationDirs(cacheDir, namespace)) {
             deleteRecursively(dir)
         }
