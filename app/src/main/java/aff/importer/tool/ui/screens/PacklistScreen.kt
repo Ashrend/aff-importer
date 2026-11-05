@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -174,12 +175,20 @@ fun PacklistScreen(
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             )
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                // 键盘弹出时把 Snackbar 抬到键盘上方
+                modifier = Modifier.imePadding()
+            )
+        }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                // 全面屏下窗口不再为键盘让位，需要自己避让
+                .imePadding()
         ) {
             // 搜索栏
             SearchBar(
