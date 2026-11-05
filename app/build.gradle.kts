@@ -50,7 +50,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 开启 R8 代码压缩与资源压缩
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
