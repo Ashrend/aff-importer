@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
@@ -33,6 +34,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.roundToInt
 
 /**
  * 主 Activity - 单 Activity 架构，带底部导航
@@ -121,19 +124,32 @@ private fun MainScreen(
             }
         }
     ) { paddingValues ->
+        // 底部导航栏高度与键盘高度取并集而不是相加：
+        // 键盘弹出时导航栏本身已被键盘盖住，若相加会把内容多顶高一个导航栏高度（202px），
+        // 在键盘上方留下一条空白带
+        val density = LocalDensity.current
+        val navBarBottomPx = with(density) { paddingValues.calculateBottomPadding().toPx().roundToInt() }
+        val imeBottomPx = WindowInsets.ime.getBottom(density)
+        val extraBottomPx = (maxOf(navBarBottomPx, imeBottomPx) - navBarBottomPx).coerceAtLeast(0)
+        val extraBottom = with(density) { extraBottomPx.toDp() }
+
+        val contentModifier = Modifier
+            .padding(paddingValues)
+            .padding(bottom = extraBottom)
+
         when (selectedItem) {
             0 -> {
                 // 导入页面
                 ImportScreen(
                     viewModel = mainViewModel,
-                    modifier = Modifier.padding(paddingValues)
+                    modifier = contentModifier
                 )
             }
             1 -> {
                 // 曲目管理页面
                 SonglistScreen(
                     directoryUri = directoryUri,
-                    modifier = Modifier.padding(paddingValues),
+                    modifier = contentModifier,
                     viewModel = songlistViewModel
                 )
             }
@@ -141,7 +157,7 @@ private fun MainScreen(
                 // 曲包管理页面
                 PacklistScreen(
                     directoryUri = directoryUri,
-                    modifier = Modifier.padding(paddingValues),
+                    modifier = contentModifier,
                     viewModel = packlistViewModel
                 )
             }
