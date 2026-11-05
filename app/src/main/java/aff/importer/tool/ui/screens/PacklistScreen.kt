@@ -5,6 +5,7 @@ import aff.importer.tool.PacklistViewModel
 import aff.importer.tool.data.model.DuplicatePackGroup
 import aff.importer.tool.data.model.ArtworkScanState
 import aff.importer.tool.data.model.Pack
+import aff.importer.tool.ui.components.ImagePlaceholderIcon
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -61,11 +62,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
@@ -78,52 +75,6 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import kotlinx.coroutines.flow.distinctUntilChanged
-
-/**
- * 曲包封面占位图标。
- *
- * material-icons-core 里没有 Image 图标（它属于 material-icons-extended），
- * 而本项目不引入额外依赖，因此按 Material 的图片图标造型在这里自建一个。
- * （与曲目页 SonglistScreen.kt 中的同名私有图标一致，两者互不影响。）
- */
-private val ImagePlaceholderIcon: ImageVector = ImageVector.Builder(
-    name = "ImagePlaceholder",
-    defaultWidth = 24.dp,
-    defaultHeight = 24.dp,
-    viewportWidth = 24f,
-    viewportHeight = 24f
-).apply {
-    path(
-        fill = SolidColor(Color.Black),
-        pathFillType = PathFillType.EvenOdd
-    ) {
-        // 外框
-        moveTo(3f, 5f)
-        lineTo(21f, 5f)
-        lineTo(21f, 19f)
-        lineTo(3f, 19f)
-        close()
-        // 内框：EvenOdd 挖空后形成边框
-        moveTo(5f, 7f)
-        lineTo(5f, 17f)
-        lineTo(19f, 17f)
-        lineTo(19f, 7f)
-        close()
-        // 山峰
-        moveTo(6f, 17f)
-        lineTo(10f, 12.5f)
-        lineTo(13f, 15.5f)
-        lineTo(15.5f, 13.5f)
-        lineTo(18f, 17f)
-        close()
-        // 太阳
-        moveTo(15.5f, 8.5f)
-        lineTo(16.5f, 9.5f)
-        lineTo(15.5f, 10.5f)
-        lineTo(14.5f, 9.5f)
-        close()
-    }
-}.build()
 
 /**
  * Packlist 管理主界面
@@ -386,6 +337,9 @@ private fun PackCard(
 ) {
     val context = LocalContext.current
 
+    // 加载失败时的占位（cacheDir 被系统清理时，已发布的 file:// Uri 会失效）
+    val placeholderPainter = rememberVectorPainter(ImagePlaceholderIcon)
+
     // 图片请求记忆化：避免每次重组都重新构建请求对象
     val imageRequest = remember(pack.id, bannerUri) {
         bannerUri?.let { uri ->
@@ -420,7 +374,8 @@ private fun PackCard(
                         model = it,
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        contentScale = ContentScale.Crop,
+                        error = placeholderPainter
                     )
                 }
 
