@@ -48,8 +48,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         // 全面屏：内容延伸到状态栏与手势导航条区域，由各组件自行按 inset 避让
-        // 挖孔模式由 enableEdgeToEdge() 自己设置（API 28-29 为 SHORT_EDGES，API 30+ 为 ALWAYS），
-        // 这里不再额外覆盖，否则会把 androidx 选的 ALWAYS 静默降级成 SHORT_EDGES
+        // 挖孔模式由 enableEdgeToEdge() 自己设置（API 26-27 不设置、沿用系统默认 DEFAULT，
+        // API 28-29 为 SHORT_EDGES，API 30+ 为 ALWAYS），这里不再额外覆盖，
+        // 否则会把 androidx 选的 ALWAYS 静默降级成 SHORT_EDGES
         enableEdgeToEdge()
         
         setContent {
