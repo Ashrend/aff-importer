@@ -1,6 +1,7 @@
 package aff.importer.tool.data
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
@@ -24,6 +25,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.math.min
 
 /**
@@ -113,7 +115,8 @@ private typealias ScanTask = ArtworkScanTask<Map<String, IndexedDocument>>
 class ArtworkRepository(
     context: Context,
     scope: CoroutineScope,
-    val kind: ArtworkKind
+    val kind: ArtworkKind,
+    private val onWarning: (String) -> Unit = {}
 ) {
 
     companion object {
@@ -645,6 +648,9 @@ class ArtworkRepository(
         val file = children.firstOrNull { it.name == jacket.fileName } ?: return null
         val fileUri = DocumentsContract.buildDocumentUriUsingTree(folder.treeUri, file.documentId)
 
+        // 格式不符只告警，不影响选中的文件（图照样显示）
+        checkImageFormat(fileUri, jacket.fileName, id)
+
         // 只有 256px 的 JPEG 能按字节复制；其余（含 PNG 缩略图）都要解码后转码成 JPEG。
         // 落盘目标是任务自己的位置，绝不会写到别的目录标识下
         val cached = if (jacket.isThumbnail) {
@@ -670,10 +676,53 @@ class ArtworkRepository(
         val file = indexSnapshot[id] ?: return null
         val fileUri = file.uri
 
+        // 格式不符只告警，不影响封面显示
+        file.name?.let { checkImageFormat(fileUri, it, file.parentLabel) }
+
         // 封面是横幅，按 512x256 转码；落盘目标是任务自己的位置
         val cached = cache.transcodeToCache(location, id, fileUri, PACK_BANNER_WIDTH, PACK_BANNER_HEIGHT)
         // 落盘失败时回退到 SAF 的 content:// Uri
         return cached?.let { Uri.fromFile(it) } ?: fileUri
+    }
+
+    /**
+     * 检查图片文件的扩展名与实际格式是否一致，不一致就发一条告警。
+     *
+     * 只读文件头（[BitmapFactory.Options.inJustDecodeBounds]），不解码像素。
+     *
+     * **只诊断**：绝不改变选中的文件，也绝不会让图片消失 ——
+     * 格式不符照样解析、照样显示，只在日志里留个警告。
+     */
+    private suspend fun checkImageFormat(uri: Uri, fileName: String, parentLabel: String?) {
+        withContext(Dispatchers.IO) {
+            try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                appContext.contentResolver.openInputStream(uri)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, bounds)
+                }
+                // 解不出文件头就没有实际格式可比，不告警
+                val actualMime = bounds.outMimeType ?: return@withContext
+
+                val ext = ArtworkFileRules.extensionOf(fileName)
+                val expectedMime = when (ext) {
+                    "jpg", "jpeg" -> "image/jpeg"
+                    "png" -> "image/png"
+                    // 其它扩展名没有约定，不告警
+                    else -> return@withContext
+                }
+                if (actualMime == expectedMime) return@withContext
+
+                val path = if (parentLabel != null) "$parentLabel/$fileName" else fileName
+                val message = "发现扩展名与实际格式不符: $path (扩展名=$ext, 实际=$actualMime)"
+                Log.w(TAG, message)
+                onWarning(message)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 检查失败不影响显示：它只是诊断，不是准入条件
+                Log.w(TAG, "检查图片格式失败: $fileName", e)
+            }
+        }
     }
 
     /**

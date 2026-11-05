@@ -12,6 +12,7 @@ import aff.importer.tool.data.model.DuplicateSongEntry
 import aff.importer.tool.data.model.DuplicateSongGroup
 import aff.importer.tool.data.model.ArtworkKind
 import aff.importer.tool.data.model.ArtworkScanState
+import aff.importer.tool.data.model.LogLevel
 import aff.importer.tool.data.model.Song
 import aff.importer.tool.data.model.SonglistUiState
 import kotlinx.coroutines.CancellationException
@@ -43,8 +44,17 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
     /**
      * 曲绘扫描编排：负责目录索引、优先级队列与应用内缓存落盘。
      * 它内部自带 IO 线程池，ViewModel 只负责发请求，不阻塞主线程。
+     *
+     * 扫描过程中的诊断信息（如扩展名与实际格式不符）接到 songlistRepository 的日志上，
+     * 这样它才会出现在应用的日志显示里。
      */
-    private val artworkRepository = ArtworkRepository(application, viewModelScope, ArtworkKind.SONG_JACKET)
+    private val artworkRepository = ArtworkRepository(
+        application,
+        viewModelScope,
+        ArtworkKind.SONG_JACKET
+    ) { message ->
+        SonglistRepository.emitLog(message, LogLevel.WARNING)
+    }
 
     /**
      * 每个曲目一个 Compose 状态：写入某个 id 只会让读取它的那个卡片重组。
