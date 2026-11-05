@@ -58,6 +58,18 @@ class ArtworkPriorityQueueTest {
     }
 
     @Test
+    fun `prioritize 传入重复 id 时只前插一次`() {
+        val q = ArtworkPriorityQueue()
+        q.enqueue(listOf("a", "b", "c"))
+        q.prioritize(listOf("a", "a"))
+        assertEquals(3, q.size)
+        assertEquals("a", q.poll())
+        assertEquals("b", q.poll())
+        assertEquals("c", q.poll())
+        assertNull(q.poll())
+    }
+
+    @Test
     fun `clear 清空队列`() {
         val q = ArtworkPriorityQueue()
         q.enqueue(listOf("a", "b"))

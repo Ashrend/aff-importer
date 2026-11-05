@@ -18,10 +18,10 @@ class ArtworkPriorityQueue {
         }
     }
 
-    /** 把仍在队列中的 ids 按给定顺序移到队首，其余保持原相对顺序 */
+    /** 把仍在队列中的 ids 按给定顺序移到队首，其余保持原相对顺序；同一次调用中重复的 id 只前插一次 */
     fun prioritize(ids: Collection<String>) {
         if (ids.isEmpty()) return
-        val front = ids.filter { it in members }
+        val front = ids.filter { it in members }.distinct()
         if (front.isEmpty()) return
         val frontSet = front.toSet()
         val rest = order.filter { it !in frontSet }
