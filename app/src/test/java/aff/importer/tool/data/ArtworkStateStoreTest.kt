@@ -68,4 +68,40 @@ class ArtworkStateStoreTest {
         assertFalse(store.contains("b"))
         assertEquals("uri-a", store.valueFor("a"))
     }
+
+    @Test
+    fun `clearValues 清掉所有条目的值但保留条目`() {
+        val store = ArtworkStateStore<String>()
+        store.prepare(listOf("a", "b"))
+        store.set("a", "uri-a")
+        store.set("b", "uri-b")
+        store.clearValues()
+        assertTrue(store.contains("a"))
+        assertTrue(store.contains("b"))
+        assertNull(store.valueFor("a"))
+        assertNull(store.valueFor("b"))
+    }
+
+    @Test
+    fun `clearValues 之后仍然可以写入新值`() {
+        val store = ArtworkStateStore<String>()
+        store.prepare(listOf("a"))
+        store.set("a", "old-uri")
+        store.clearValues()
+        // 状态实例没有被替换，所以写入新值照样生效
+        store.set("a", "new-uri")
+        assertEquals("new-uri", store.valueFor("a"))
+    }
+
+    @Test
+    fun `clearValues 之后 prepare 建立的条目不受影响`() {
+        val store = ArtworkStateStore<String>()
+        store.prepare(listOf("a"))
+        store.set("a", "uri-a")
+        store.clearValues()
+        store.prepare(listOf("a", "b"))
+        assertNull(store.valueFor("a"))
+        assertNull(store.valueFor("b"))
+        assertEquals(2, store.ids.size)
+    }
 }

@@ -87,7 +87,16 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
+        // 目标目录变了没有：变了就要清掉上一个目录残留的曲绘值
+        val directoryChanged = currentDirectoryUri != directoryUri
         currentDirectoryUri = directoryUri
+
+        if (directoryChanged) {
+            // 切换目标目录：旧 Uri 指向的是上一个目录的缓存文件，
+            // 继续显示就是错的（新目录里可能是另一张图）。
+            // 清值而不是换实例 —— UI 观察的是状态实例，换实例后新图就再也显示不出来。
+            artworkStates.clearValues()
+        }
 
         // 只取消上一次未完成的列表加载；曲绘状态槽要保留，替换实例会让 UI 收不到更新
         currentListLoadJob?.cancel()
@@ -102,7 +111,7 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                 // 曲绘状态槽必须在列表发布给 UI 之前准备好：
                 // UI 读到不存在的状态就没有可观察的对象，之后图片永远不会出现
                 val folderIds = songs.map { it.getActualFolderId() }
-                artworkStates.retainOnly(folderIds)   // 丢弃旧目录的条目（id 相同的会保留，UI 观察不失效）
+                artworkStates.retainOnly(folderIds)   // 丢弃旧目录的条目（id 相同的保留实例，值已在切换目录时清空）
                 artworkStates.prepare(folderIds)      // 为新条目建立状态槽
 
                 _uiState.update {

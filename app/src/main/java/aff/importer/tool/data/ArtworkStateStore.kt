@@ -51,6 +51,22 @@ class ArtworkStateStore<T> {
         states.keys.filter { it !in keep }.forEach { states.remove(it) }
     }
 
+    /**
+     * 清空所有已有状态槽的**值**，但保留状态槽实例。
+     *
+     * 用于切换目标目录：两个目录里都存在的条目，其旧值指向上一个目录的缓存文件，
+     * 继续显示就是错的（新目录里可能是另一张图）。清值之后 UI 显示占位图
+     * （诚实的「还没加载」），等新目录的扫描结果到达再覆盖。
+     *
+     * 注意：只清值，不换实例 —— UI 观察的是 [MutableState] 实例而不是值，
+     * 换成新实例之后新扫描出来的图就再也显示不出来。
+     */
+    fun clearValues() {
+        for (state in states.values) {
+            state.value = null
+        }
+    }
+
     fun contains(id: String): Boolean = states.containsKey(id)
 
     val ids: Set<String> get() = states.keys.toSet()
