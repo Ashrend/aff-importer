@@ -192,6 +192,11 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
 
     /**
      * 更新歌曲元数据
+     *
+     * 只有 remote_dl 变化（曲绘文件夹改名）时才需要重扫曲绘：
+     * 其余元数据（标题 / BPM / 难度等）不影响曲绘，重扫会白白重建索引并重跑一遍队列。
+     *
+     * 曲绘状态槽的建立先于列表发布，保证 UI 发布后就能观察到扫描结果。
      */
     fun updateSong(updatedSong: Song) {
         val directoryUri = currentDirectoryUri ?: return
@@ -201,6 +206,9 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val originalSong = _uiState.value.allSongs.find { it.id == updatedSong.id }
             val remoteDlChanged = originalSong != null && originalSong.remoteDl != updatedSong.remoteDl
+
+            // 只有 remote_dl 变了才需要重新扫曲绘：文件夹 id 变了，旧的缓存文件对不上
+            var rescanFolderIds: List<String>? = null
 
             if (remoteDlChanged) {
                 val oldFolderId = originalSong.getActualFolderId()
@@ -222,6 +230,10 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                 // 旧文件夹已经不存在，丢弃它的状态与缓存
                 artworkStates.remove(oldFolderId)
                 artworkRepository.remove(oldFolderId)
+
+                // 状态槽必须先于列表发布建立，UI 才能观察到结果
+                rescanFolderIds = listOf(newFolderId)
+                artworkStates.prepare(rescanFolderIds)
             }
 
             val success = songlistRepository.updateSong(directoryUri, updatedSong)
@@ -250,10 +262,10 @@ class SonglistViewModel(application: Application) : AndroidViewModel(application
                     )
                 }
 
-                // 新文件夹要重新扫一次曲绘；先建好状态槽，UI 才能观察到结果
-                val newFolderIds = listOf(updatedSong.getActualFolderId())
-                artworkStates.prepare(newFolderIds)
-                artworkRepository.requestScan(directoryUri, newFolderIds)
+                // 文件夹改名了才重扫；改标题 / BPM / 难度都不需要重新扫曲绘
+                rescanFolderIds?.let {
+                    artworkRepository.requestScan(directoryUri, it)
+                }
             } else {
                 _uiState.update {
                     it.copy(
