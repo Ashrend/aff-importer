@@ -119,7 +119,8 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 // 列表已经发布给 UI，再请求扫描封面
-                artworkRepository.requestScan(directoryUri, packIds)
+                // 曲包类型要一起带过去：append 类型的封面在 pack/1080/ 下的分隔图里
+                artworkRepository.requestScan(directoryUri, packIds, packTypesOf(packs))
 
                 hasLoaded = true
             } catch (e: CancellationException) {
@@ -171,10 +172,19 @@ class PacklistViewModel(application: Application) : AndroidViewModel(application
      */
     fun refreshArtworks() {
         val directoryUri = currentDirectoryUri ?: return
-        val packIds = _uiState.value.allPacks.map { it.id }
+        val packs = _uiState.value.allPacks
+        val packIds = packs.map { it.id }
         artworkStates.prepare(packIds)
-        artworkRepository.requestRefresh(directoryUri, packIds)
+        artworkRepository.requestRefresh(directoryUri, packIds, packTypesOf(packs))
     }
+
+    /**
+     * 曲包 id → 曲包类型。
+     *
+     * 扫描封面时要用它决定封面来源：append 类型的封面是 pack/1080/ 下的分隔图。
+     */
+    private fun packTypesOf(packs: List<Pack>): Map<String, String> =
+        packs.associate { it.id to it.type }
 
     /**
      * 更新搜索关键词

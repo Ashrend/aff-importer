@@ -31,10 +31,14 @@ import kotlin.math.min
  *
  * @param treeUri 所属的树 Uri（用户授权的目标目录）
  * @param documentId 该子文档在树中的 document id
+ * @param name 显示名；只有文件条目才有（目录条目为 null），用于日志里的扩展名检查
+ * @param parentLabel 父级标签，用于日志（如 pack、pack/1080）；没有时为 null
  */
 private data class IndexedDocument(
     val treeUri: Uri,
-    val documentId: String
+    val documentId: String,
+    val name: String? = null,
+    val parentLabel: String? = null
 ) {
     /** 子文档自身的 Uri：content://<authority>/tree/<treeId>/document/<documentId> */
     val uri: Uri
@@ -102,6 +106,8 @@ private typealias ScanTask = ArtworkScanTask<Map<String, IndexedDocument>>
  * @param context 应用上下文（内部只使用 applicationContext）
  * @param scope worker 与请求协程所属的作用域，ViewModel 销毁时随之取消
  * @param kind 图片种类，决定索引形状与目标尺寸
+ * @param onWarning 告警回调：把诊断信息（如扩展名与实际格式不符）送到应用的日志显示。
+ *  由 ViewModel 接到对应仓库的 emitLog 上；不接也不影响图片显示。
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ArtworkRepository(
@@ -131,6 +137,9 @@ class ArtworkRepository(
 
         /** 曲包封面所在目录名 */
         private const val PACK_FOLDER_NAME = "pack"
+
+        /** append 类型曲包分隔图所在目录名（pack/1080/） */
+        private const val PACK_DIVIDER_FOLDER_NAME = "1080"
 
         /**
          * 子文档查询的投影：一次拿到 id、显示名与 MIME 类型。
@@ -223,10 +232,18 @@ class ArtworkRepository(
      *
      * @param directoryUri 目标目录
      * @param ids 待解析的条目 id：曲目为实际文件夹 id，曲包为 pack id
+     * @param sourceHints 条目的附加信息（id → 值）：曲包传曲包类型，用来决定封面来源。
+     *  曲目没有这类信息，传空表即可。
      */
-    fun requestScan(directoryUri: Uri, ids: List<String>) {
+    fun requestScan(
+        directoryUri: Uri,
+        ids: List<String>,
+        sourceHints: Map<String, String> = emptyMap()
+    ) {
         // SAF 查询是阻塞 IO，不能占用调用方线程（ViewModel 的 scope 跑在主线程）
-        jobScope.launch(Dispatchers.IO) { performScan(directoryUri, ids, purgeAfterScan = false) }
+        jobScope.launch(Dispatchers.IO) {
+            performScan(directoryUri, ids, sourceHints, purgeAfterScan = false)
+        }
     }
 
     /**
@@ -237,8 +254,13 @@ class ArtworkRepository(
      *
      * @param directoryUri 目标目录
      * @param ids 待解析的条目 id
+     * @param sourceHints 条目的附加信息（id → 值），含义同 [requestScan]
      */
-    fun requestRefresh(directoryUri: Uri, ids: List<String>) {
+    fun requestRefresh(
+        directoryUri: Uri,
+        ids: List<String>,
+        sourceHints: Map<String, String> = emptyMap()
+    ) {
         jobScope.launch(Dispatchers.IO) {
             val dirKey = ArtworkCachePaths.directoryKey(directoryUri.toString())
 
@@ -267,7 +289,7 @@ class ArtworkRepository(
                 completed = 0
             }
 
-            performScan(directoryUri, ids, purgeAfterScan = true)
+            performScan(directoryUri, ids, sourceHints, purgeAfterScan = true)
         }
     }
 
@@ -312,8 +334,14 @@ class ArtworkRepository(
      * 代次只在同一个目录内用于强制刷新。
      *
      * @param purgeAfterScan 本批次完成后是否清理旧缓存代次目录
+     * @param sourceHints 条目的附加信息（id → 值），曲包传曲包类型
      */
-    private suspend fun performScan(directoryUri: Uri, ids: List<String>, purgeAfterScan: Boolean) {
+    private suspend fun performScan(
+        directoryUri: Uri,
+        ids: List<String>,
+        sourceHints: Map<String, String>,
+        purgeAfterScan: Boolean
+    ) {
         // 1) 先把目录标识落到缓存上（锁外）：
         //    缓存路径带目录维度，不同目标目录天然隔离；换到已用过的目录则直接复用它的热缓存。
         val dirKey = ArtworkCachePaths.directoryKey(directoryUri.toString())
@@ -335,7 +363,7 @@ class ArtworkRepository(
 
         // 3) 索引在锁外构建：SAF 查询是阻塞 IO，放在锁里会让所有 worker
         //    和主线程发来的优先级请求一起排队
-        val newIndex = buildIndex(directoryUri)
+        val newIndex = buildIndex(directoryUri, sourceHints)
 
         // 4) 在锁内发布索引、缓存位置并入队
         mutex.withLock {
@@ -381,15 +409,20 @@ class ArtworkRepository(
      * 构建当前目录的图片索引。
      *
      * SONG_JACKET：key = 文件夹名（= 曲目的实际文件夹 id），value = 该曲目文件夹。
-     * PACK_BANNER：key = pack id，value = 封面文件。
+     * PACK_BANNER：key = pack id，value = 选中的封面文件。
      *
-     * 每次构建只发 1 次（曲绘）或 2 次（曲包）SAF 查询。
+     * 每次构建只发 1 次（曲绘）或 3 次（曲包）SAF 查询。
+     *
+     * @param sourceHints 条目的附加信息（id → 值）：曲包传曲包类型，决定封面来源
      */
-    private suspend fun buildIndex(directoryUri: Uri): Map<String, IndexedDocument> {
+    private suspend fun buildIndex(
+        directoryUri: Uri,
+        sourceHints: Map<String, String>
+    ): Map<String, IndexedDocument> {
         return try {
             when (kind) {
                 ArtworkKind.SONG_JACKET -> buildSongFolderIndex(directoryUri)
-                ArtworkKind.PACK_BANNER -> buildPackBannerIndex(directoryUri)
+                ArtworkKind.PACK_BANNER -> buildPackBannerIndex(directoryUri, sourceHints)
             }
         } catch (e: CancellationException) {
             // 协程被取消不是错误，直接向上抛，别把扫描吞成「索引为空」
@@ -421,25 +454,94 @@ class ArtworkRepository(
     /**
      * 曲包封面索引：所有封面都在 pack 目录里，列举一次即可解析出全部 pack id。
      * 旧实现每个曲包都重新查找 pack 目录，是 O(P²) 的 SAF 查询。
+     *
+     * 候选来源有三种：
+     * - `pack/1080/divider_&lt;id&gt;.&lt;ext&gt;`：append 类型曲包专用（分隔图）；
+     * - `pack/1080_select_&lt;id&gt;.&lt;ext&gt;` 与 `pack/select_&lt;id&gt;.&lt;ext&gt;`：标准曲包。
+     *
+     * append 类型曲包只要 `pack/1080/` 目录存在，就只认分隔图：
+     * 找不到分隔图就没有封面，不退回标准候选（免得显示成别的曲包的图）。
+     *
+     * 选谁由曲包类型决定，类型是「每个 pack id 一份」的，
+     * 所以要由调用方通过 sourceHints 带进来。
      */
-    private suspend fun buildPackBannerIndex(directoryUri: Uri): Map<String, IndexedDocument> {
+    private suspend fun buildPackBannerIndex(
+        directoryUri: Uri,
+        packTypes: Map<String, String>
+    ): Map<String, IndexedDocument> {
         // 第一次查询：根目录里找 pack 目录
         val packFolder = queryChildren(rootChildrenUri(directoryUri)).firstOrNull {
             it.name == PACK_FOLDER_NAME && it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
         } ?: return emptyMap()
 
-        // 第二次查询：pack 目录下的封面文件
-        val children = queryChildren(IndexedDocument(directoryUri, packFolder.documentId).childrenUri)
+        // 第二次查询：pack 目录下的文件（标准候选）与 pack/1080/ 子目录
+        val packChildren = queryChildren(IndexedDocument(directoryUri, packFolder.documentId).childrenUri)
+
+        // pack/1080/ 目录：append 类型曲包的分隔图在这里
+        val dividerFolder = packChildren.firstOrNull {
+            it.name == PACK_DIVIDER_FOLDER_NAME && it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+        }
+        // 第三次查询：pack/1080/ 目录下的分隔图
+        val dividerChildren = dividerFolder?.let {
+            queryChildren(IndexedDocument(directoryUri, it.documentId).childrenUri)
+        } ?: emptyList()
+
+        // 候选文件：曲包 id → (候选文件名 → 文件)
+        val standardFiles = groupPackCandidates(directoryUri, packChildren, PACK_FOLDER_NAME) { candidate ->
+            candidate.kind != ArtworkFileRules.PackBannerKind.DIVIDER
+        }
+        val dividerFiles = groupPackCandidates(directoryUri, dividerChildren, "$PACK_FOLDER_NAME/$PACK_DIVIDER_FOLDER_NAME") { candidate ->
+            candidate.kind == ArtworkFileRules.PackBannerKind.DIVIDER
+        }
 
         val map = LinkedHashMap<String, IndexedDocument>()
+        val packIds = LinkedHashSet<String>()
+        packIds.addAll(standardFiles.keys)
+        packIds.addAll(dividerFiles.keys)
+        for (packId in packIds) {
+            val selection = ArtworkFileRules.selectPackBanner(
+                packId = packId,
+                packType = packTypes[packId],
+                hasDividerFolder = dividerFolder != null,
+                standardNames = standardFiles[packId]?.keys ?: emptySet(),
+                dividerNames = dividerFiles[packId]?.keys ?: emptySet()
+            ) ?: continue
+            val file = when (selection.source) {
+                ArtworkFileRules.PackBannerSource.STANDARD ->
+                    standardFiles[packId]?.get(selection.fileName)
+                ArtworkFileRules.PackBannerSource.DIVIDER ->
+                    dividerFiles[packId]?.get(selection.fileName)
+            } ?: continue
+            map[packId] = file
+        }
+        return map
+    }
+
+    /**
+     * 把一层子文档里的曲包封面候选按「曲包 id → (候选文件名 → 文件)」归类。
+     *
+     * @param treeUri 所属的树 Uri
+     * @param children 这一层的子文档
+     * @param parentLabel 父级标签，用于日志（如 pack、pack/1080）
+     * @param accept 只接受满足条件的候选（目录一律排除）
+     */
+    private fun groupPackCandidates(
+        treeUri: Uri,
+        children: List<ChildDocument>,
+        parentLabel: String,
+        accept: (ArtworkFileRules.PackBannerCandidate) -> Boolean
+    ): Map<String, Map<String, IndexedDocument>> {
+        val result = LinkedHashMap<String, MutableMap<String, IndexedDocument>>()
         for (child in children) {
             // 子目录不可能是封面
             if (child.mimeType == DocumentsContract.Document.MIME_TYPE_DIR) continue
             val name = child.name ?: continue
-            val packId = ArtworkFileRules.parsePackBannerId(name) ?: continue
-            map[packId] = IndexedDocument(directoryUri, child.documentId)
+            val candidate = ArtworkFileRules.parsePackBannerCandidate(name) ?: continue
+            if (!accept(candidate)) continue
+            result.getOrPut(candidate.packId) { LinkedHashMap() }[name] =
+                IndexedDocument(treeUri, child.documentId, name = name, parentLabel = parentLabel)
         }
-        return map
+        return result
     }
 
     /**
@@ -536,13 +638,14 @@ class ArtworkRepository(
         // 没有这个文件夹 → 该曲目不存在（可能已被删除或改名）
         val folder = indexSnapshot[id] ?: return null
 
-        // 一次查询拿到这个曲目文件夹下的全部文件
+        // 一次查询拿到这个曲目文件夹下的全部文件（子目录不算图片）
         val children = queryChildren(folder.childrenUri)
+            .filter { it.mimeType != DocumentsContract.Document.MIME_TYPE_DIR }
         val jacket = ArtworkFileRules.selectSongJacket(children.mapNotNull { it.name }) ?: return null
         val file = children.firstOrNull { it.name == jacket.fileName } ?: return null
         val fileUri = DocumentsContract.buildDocumentUriUsingTree(folder.treeUri, file.documentId)
 
-        // 缩略图本身就是 256px JPEG，直接复制字节；全尺寸图需要降采样转码
+        // 只有 256px 的 JPEG 能按字节复制；其余（含 PNG 缩略图）都要解码后转码成 JPEG。
         // 落盘目标是任务自己的位置，绝不会写到别的目录标识下
         val cached = if (jacket.isThumbnail) {
             cache.copyToCache(location, id, fileUri)
@@ -555,6 +658,9 @@ class ArtworkRepository(
 
     /**
      * 解析曲包封面：索引命中 → 转码到应用内缓存。
+     *
+     * 索引里存的已经是选中的源文件（append 类型曲包是 pack/1080/ 下的分隔图，
+     * 其余是 pack/ 下的标准候选），这里只负责落盘。
      */
     private suspend fun resolvePackBanner(
         id: String,
